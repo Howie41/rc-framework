@@ -84,7 +84,7 @@ public:
    * @brief
    *
    */
-  void onRxEvent();
+  void onRxEvent(size_t received_size = 0U);
   /**
    * @brief
    *
@@ -122,4 +122,6 @@ private:
   void *rx_callback_user_{nullptr};
 
   static UartPort *map_[kMaxMap];
+
+  void pushRxSpan(const uint8_t *data, size_t len);
 };

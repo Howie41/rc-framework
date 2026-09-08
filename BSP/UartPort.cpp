@@ -49,6 +49,16 @@ HAL_StatusTypeDef UartPort::startRxDmaIdle() {
     return HAL_ERROR;
   }
   last_rx_pos_ = 0;
+
+  // If no RX DMA is configured, use UART receive-to-idle interrupts.
+  if (huart_->hdmarx == nullptr) {
+    if (rx_dma_buf_size_ > 0xFFFFU) {
+      return HAL_ERROR;
+    }
+    return HAL_UARTEx_ReceiveToIdle_IT(
+        huart_, rx_dma_buf_, static_cast<uint16_t>(rx_dma_buf_size_));
+  }
+
   HAL_StatusTypeDef status = HAL_UARTEx_ReceiveToIdle_DMA(huart_, rx_dma_buf_, rx_dma_buf_size_);
   
   return status;
@@ -117,8 +127,46 @@ bool UartPort::Read(Packet &packet) {
   return rx_queue_.TryPop(packet) == Algorithm::QueueError::OK;
 }
 
-void UartPort::onRxEvent() {
-  if (huart_ == nullptr || huart_->hdmarx == nullptr) {
+void UartPort::pushRxSpan(const uint8_t *data, size_t len) {
+  if (data == nullptr || len == 0U) {
+    return;
+  }
+
+  size_t offset = 0U;
+  while (offset < len) {
+    Packet packet{};
+    size_t part = len - offset;
+    if (part > sizeof(packet.data)) {
+      part = sizeof(packet.data);
+    }
+
+    packet.len = static_cast<uint16_t>(part);
+    std::memcpy(packet.data, data + offset, part);
+
+    if (rx_queue_.TryPush(packet) != Algorithm::QueueError::OK) {
+      break;
+    }
+
+    offset += part;
+  }
+
+  if (rx_callback_ != nullptr) {
+    rx_callback_(data, len, rx_callback_user_);
+  }
+}
+
+void UartPort::onRxEvent(size_t received_size) {
+  if (huart_ == nullptr || rx_dma_buf_ == nullptr || rx_dma_buf_size_ == 0U) {
+    return;
+  }
+
+  if (huart_->hdmarx == nullptr) {
+    const size_t valid_size =
+        received_size <= rx_dma_buf_size_ ? received_size : rx_dma_buf_size_;
+    pushRxSpan(rx_dma_buf_, valid_size);
+    last_rx_pos_ = 0U;
+    (void)HAL_UARTEx_ReceiveToIdle_IT(
+        huart_, rx_dma_buf_, static_cast<uint16_t>(rx_dma_buf_size_));
     return;
   }
 
@@ -127,47 +175,12 @@ void UartPort::onRxEvent() {
     return;
   }
 
-  auto pushRxSpan = [this](const uint8_t *data, size_t len) {
-    if (data == nullptr || len == 0) {
-      return;
-    }
-
-    size_t offset = 0;
-    while (offset < len) {
-      Packet packet{};
-      size_t part = len - offset;
-      if (part > sizeof(packet.data)) {
-        part = sizeof(packet.data);
-      }
-
-      packet.len = static_cast<uint16_t>(part);
-      std::memcpy(packet.data, data + offset, part);
-
-      if (rx_queue_.TryPush(packet) != Algorithm::QueueError::OK) {
-        break;
-      }
-
-      offset += part;
-    }
-  };
-
   if (curr_pos > last_rx_pos_) {
     pushRxSpan(rx_dma_buf_ + last_rx_pos_, curr_pos - last_rx_pos_);
-    if (rx_callback_ != nullptr) {
-      rx_callback_(rx_dma_buf_ + last_rx_pos_, curr_pos - last_rx_pos_,
-                   rx_callback_user_);
-    }
   } else {
     pushRxSpan(rx_dma_buf_ + last_rx_pos_, rx_dma_buf_size_ - last_rx_pos_);
-    if (rx_callback_ != nullptr) {
-      rx_callback_(rx_dma_buf_ + last_rx_pos_, rx_dma_buf_size_ - last_rx_pos_,
-                   rx_callback_user_);
-    }
     if (curr_pos > 0) {
       pushRxSpan(rx_dma_buf_, curr_pos);
-      if (rx_callback_ != nullptr) {
-        rx_callback_(rx_dma_buf_, curr_pos, rx_callback_user_);
-      }
     }
   }
 
@@ -232,7 +245,7 @@ extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart,
                                            uint16_t Size) {
   UartPort *port = UartPort::fromHandle(huart);
   if (port != nullptr) {
-    port->onRxEvent();
+    port->onRxEvent(Size);
   }
 }
 

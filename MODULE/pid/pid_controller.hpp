@@ -1,10 +1,13 @@
 #pragma once
 
 #include "bsp_dwt.hpp"
+#include "pid_manager.hpp"
 
 #include <bitset>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #if defined(__GNUC__)
 #define PID_ITCM_FUNC __attribute__((section(".itcm_text"), noinline))
@@ -14,6 +17,8 @@
 
 class PidController {
 public:
+    static constexpr std::size_t NAME_SIZE = 32U;
+
     /**
      * @brief PID 控制器可选改进功能。
      *
@@ -58,15 +63,37 @@ public:
     /**
      * @brief 使用默认配置构造 PID 控制器。
      */
-    PidController() = default;
+    PidController() { register_self(nullptr); }
+
+    /**
+     * @brief 使用名称构造 PID 控制器。
+     * @param name PID Viewer 使用的 UTF-8 名称，最多保存 31 个字节。
+     */
+    explicit PidController(const char *name) { register_self(name); }
 
     /**
      * @brief 使用指定配置构造 PID 控制器并完成初始化。
      * @param config PID 配置参数。
      */
     explicit PidController(const Config &config) : config_(config) {
+        register_self(nullptr);
         init();
     }
+
+    /**
+     * @brief 使用名称和指定配置构造 PID 控制器。
+     * @param name PID Viewer 使用的 UTF-8 名称，最多保存 31 个字节。
+     * @param config PID 配置参数。
+     */
+    PidController(const char *name, const Config &config) : config_(config) {
+        register_self(name);
+        init();
+    }
+
+    PidController(const PidController &) = delete;
+    PidController &operator=(const PidController &) = delete;
+    PidController(PidController &&) = delete;
+    PidController &operator=(PidController &&) = delete;
 
     /**
      * @brief 更新 PID 配置并重新初始化运行状态。
@@ -75,6 +102,18 @@ public:
     void configure(const Config &config) {
         config_ = config;
         init();
+    }
+
+    /**
+     * @brief 一次更新 PID 的比例、积分和微分参数。
+     *
+     * 该接口不会清除控制器当前的积分、历史采样和输出状态，适合 Viewer
+     * 运行时调参使用。
+     */
+    void set_gains(float kp, float ki, float kd) {
+        config_.kp = kp;
+        config_.ki = ki;
+        config_.kd = kd;
     }
 
     /**
@@ -248,12 +287,30 @@ public:
     /** @brief 获取当前 PID 错误类型。 */
     ErrorType error_type() const { return error_type_; }
 
+    /** @brief 获取 PID Viewer 分配的实例编号。 */
+    uint8_t id() const { return id_; }
+
+    /** @brief 获取 PID Viewer 使用的名称。 */
+    const char *name() const { return name_; }
+
 private:
     static constexpr float MIN_DT = 1e-6f;
     static constexpr float BLOCKED_OUTPUT_RATIO = 0.001f;
     static constexpr float BLOCKED_REF_MIN = 0.0001f;
     static constexpr float BLOCKED_ERROR_RATIO = 0.95f;
     static constexpr uint16_t BLOCKED_COUNT_LIMIT = 500U;
+
+    void register_self(const char *name) {
+        std::memset(name_, 0, sizeof(name_));
+        if (name != nullptr) {
+            const std::size_t name_length = std::strlen(name);
+            const std::size_t copy_length =
+                name_length < NAME_SIZE - 1U ? name_length : NAME_SIZE - 1U;
+            std::memcpy(name_, name, copy_length);
+        }
+
+        PidManager::instance().register_pid(this);
+    }
 
     /**
      * @brief 检查指定改进功能是否启用。
@@ -419,6 +476,12 @@ private:
     uint32_t dwt_cnt_ = 0U;
     uint16_t error_count_ = 0U;
     ErrorType error_type_ = PID_ERROR_NONE;
+
+    uint8_t id_{PidManager::INVALID_PID_ID};
+    char name_[NAME_SIZE]{};
+    PidController *next_{nullptr};
+
+    friend class PidManager;
 };
 
 #undef PID_ITCM_FUNC
