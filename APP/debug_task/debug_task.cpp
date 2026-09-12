@@ -2,13 +2,13 @@
  * @file debug_task.cpp
  * @brief Export runtime debug globals for Ozone inspection.
  */
-#include "debug_task.h"
+#include "cmsis_os2.h"
+#include "rtos_task.hpp"
 
-osThreadId_t Debug_TaskHandle;
-
-
-void debugTask(void *argument) {
+void debug_task_entry(void* arg) {
+    (void)arg;
     for (;;) {
-
+        
     }
 }
+RtosTask<&debug_task_entry> debug_task("debug_task", osPriorityLow);
