@@ -63,8 +63,8 @@ file(GLOB_RECURSE SOURCES
     "APP/*.cpp"
     "BSP/*.c"
     "BSP/*.cpp"
-    "Module/*.c"
-    "Module/*.cpp"
+    "MODULE/*.c"
+    "MODULE/*.cpp"
     "APP/*.cpp"
     "Algorithm/*.c"
     "Algorithm/*.cpp"
@@ -79,7 +79,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 #使用函数递归添加用户头文件路径
 include_sub_directories_recursively(${CMAKE_SOURCE_DIR}/APP)
 include_sub_directories_recursively(${CMAKE_SOURCE_DIR}/BSP)
-include_sub_directories_recursively(${CMAKE_SOURCE_DIR}/Module)
+include_sub_directories_recursively(${CMAKE_SOURCE_DIR}/MODULE)
 include_sub_directories_recursively(${CMAKE_SOURCE_DIR}/Algorithm)
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

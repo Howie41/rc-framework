@@ -126,8 +126,8 @@ struct internal_topic {
   bool in_use;
 };
 
-RAM_D1_ATTR static internal_topic g_topic_pool[TOPICS_MAX_TOPICS]{};
-RAM_D1_ATTR static subscriber_state
+RAM_D1 static internal_topic g_topic_pool[TOPICS_MAX_TOPICS]{};
+RAM_D1 static subscriber_state
     g_sub_pool[TOPICS_MAX_TOPICS * TOPICS_MAX_SUBS_PER_TOPIC]{};
 
 static void queue_init(topic_queue_t *queue, uint32_t capacity);
