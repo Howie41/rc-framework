@@ -11,4 +11,4 @@ void debug_task_entry(void* arg) {
         
     }
 }
-RtosTask<&debug_task_entry> debug_task("debug_task", osPriorityLow);
+rtos::Task<&debug_task_entry, 128 * 4, rtos::TaskPriority::Low> debug_task("debug_task");

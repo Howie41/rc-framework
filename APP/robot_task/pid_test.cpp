@@ -96,8 +96,8 @@ void pid_control_test_entry(void* arg) {
     }
 }
 
-RAM_D1 RtosTask<&pid_control_test_entry, 128 * 4> pid_control_test_task(
-    "pid_control_test", osPriorityHigh);
+RAM_D1 rtos::Task<&pid_control_test_entry, 128 * 4, rtos::TaskPriority::High> pid_control_test_task(
+    "pid_control_test");
 
 
 
@@ -130,5 +130,5 @@ void pid_viewer_test_entry(void* arg) {
     }
 }
 
-RAM_D1 RtosTask<&pid_viewer_test_entry, 512 * 4> pid_viewer_test_task(
-    "pid_viewer_test", osPriorityLow);
+RAM_D1 rtos::Task<&pid_viewer_test_entry, 512 * 4, rtos::TaskPriority::Normal> pid_viewer_test_task(
+    "pid_viewer_test");

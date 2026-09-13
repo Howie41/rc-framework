@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
-#
-# This file is generated only once,
-# and is not re-generated if converter is called multiple times.
-#
-# User is free to modify the file as much as necessary
-#
+# ==================== 项目功能开关 ====================
+#  是否启用运行时断言
+#  - 启用后，运行时断言失败会关闭中断并停止程序执行，等待调试器检查
+#  - 可通过调试软件访问 `Asserter::m_expression`、`Asserter::m_file`
+#    和 `Asserter::m_line` 获取失败的表达式、文件名和行号
+
+set(ENABLE_ASSERTER_ASSERT ON)
+# ======================================================
 
 # Setup compiler settings
 set(CMAKE_C_STANDARD 11)
@@ -90,6 +92,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
     # DEBUG_ARM
+    ENABLE_ASSERTER_ASSERT=$<BOOL:${ENABLE_ASSERTER_ASSERT}>
 )
 
 # Remove wrong libob.a library dependency when using cpp files
