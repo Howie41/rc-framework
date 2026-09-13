@@ -14,7 +14,7 @@ void led_test_entry(void* arg) {
     (void)arg;
     for (;;) {
         HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_7);
-        osDelay(250);
+        rtos::delay((250U));
     }
 }
 
@@ -30,10 +30,11 @@ void producer_entry(void* arg) {
     for (;;) {
         RTOS_ASSERTER_ASSERT(counter <= 2);
         test_queue.put(++counter);
-        osDelay(1000);
+        rtos::delay((1000U));
     }
 }
-RAM_D1 rtos::Task<&producer_entry, 128 * 100 * 4, rtos::TaskPriority::Normal> producer_task("producer");
+RAM_D1 rtos::Task<&producer_entry, 128 * 100 * 4, rtos::TaskPriority::Normal>
+producer_task("producer");
 
 void consumer_entry(void* arg) {
     [[maybe_unused]] static uint8_t latest_received_value = 0;

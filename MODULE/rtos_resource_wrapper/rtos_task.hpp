@@ -2,6 +2,9 @@
 
 #include "FreeRTOS.h"
 #include "FreeRTOSConfig.h"
+#include "cmsis_os2.h"
+#include "projdefs.h"
+#include <cstdint>
 #include CMSIS_device_header
 #include "portmacro.h"
 #include "rtos_asserter.hpp"
@@ -160,4 +163,27 @@ public:
     }
 };
 
-}  // namespace rtos
+/**
+ * @brief 将当前任务阻塞指定的系统节拍数
+ */
+inline void delay(uint32_t ticks) {
+    if (ticks != 0U) {
+        vTaskDelay(static_cast<TickType_t>(ticks));
+    }
+}
+
+/**
+ * @brief 将当前任务阻塞到指定的绝对系统节拍
+ * @param ticks 目标系统节拍
+ * @attention 不考虑 ticks 溢出
+ */
+inline void delay_until(uint32_t ticks) {
+    TickType_t current_ticks = xTaskGetTickCount();
+    const TickType_t delay_ticks = static_cast<TickType_t>(ticks) - current_ticks;
+
+    if (delay_ticks != 0U) {
+        vTaskDelayUntil(&current_ticks, delay_ticks);
+    }
+}
+
+} // namespace rtos

@@ -92,7 +92,7 @@ void pid_control_test_entry(void* arg) {
         speed_measure += (speed_out - speed_measure) * 0.02f;
         current_measure += (current_out - current_measure) * 0.05f;
 
-        osDelay(1U);
+        rtos::delay((1U));
     }
 }
 
@@ -126,7 +126,7 @@ void pid_viewer_test_entry(void* arg) {
         }
 
         PidViewer::poll(timestamp_ms);
-        osDelay(10U);
+        rtos::delay((10U));
     }
 }
 
