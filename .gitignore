@@ -1,7 +1,7 @@
 MDK-ARM
 build/
-.clangd
 .vscode
 .settings
 CLAUDE.md
-.jdebug
+*.jdebug
+*.jdebug.user
