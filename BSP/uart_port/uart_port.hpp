@@ -262,22 +262,22 @@ public:
         callback(*port);
     }
 
-    inline static void hal_on_rx_event(UART_HandleTypeDef* huart, UartPort::RxEvent event, std::uint16_t size) {
+    inline static void hal_on_rx_event(UART_HandleTypeDef* huart, HAL_UART_RxEventTypeTypeDef event, std::uint16_t size) {
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
 
         auto callback = port->m_callbacks.on_rx_event;
         if (callback == nullptr) return;
-        callback(*port, event, size);
+        callback(*port, static_cast<UartPort::RxEvent>(event), size);
     }
 
-    inline static void hal_on_error(UART_HandleTypeDef* huart) {
+    inline static void hal_on_error(UART_HandleTypeDef* huart, std::uint32_t error) {
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
 
         auto callback = port->m_callbacks.on_error;
         if (callback == nullptr) return;
-        callback(*port, HAL_UART_GetError(huart));
+        callback(*port, error);
     }
 };
 

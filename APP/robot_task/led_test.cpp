@@ -1,6 +1,5 @@
 #include "rtos_asserter.hpp"
 #include "rtos_task.hpp"
-#include "UartPort.hpp"
 #include "memory_map.h"
 #include "pid_controller.hpp"
 #include "pid_viewer.hpp"

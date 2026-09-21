@@ -11,10 +11,9 @@ extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef* huart) {
 }
 
 extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef* huart, uint16_t Size) {
-    auto event = static_cast<UartPort::RxEvent>(HAL_UARTEx_GetRxEventType(huart));
-    UartPortManager::hal_on_rx_event(huart, event, Size);
+    UartPortManager::hal_on_rx_event(huart, HAL_UARTEx_GetRxEventType(huart), Size);
 }
 
 extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart) {
-    UartPortManager::hal_on_error(huart);
+    UartPortManager::hal_on_error(huart, HAL_UART_GetError(huart));
 }
