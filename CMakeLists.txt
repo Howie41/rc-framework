@@ -2,11 +2,10 @@ cmake_minimum_required(VERSION 3.22)
 
 # ==================== 项目功能开关 ====================
 #  是否启用运行时断言
-#  - 启用后，运行时断言失败会关闭中断并停止程序执行，等待调试器检查
-#  - 可通过调试软件访问 `Asserter::m_expression`、`Asserter::m_file`
-#    和 `Asserter::m_line` 获取失败的表达式、文件名和行号
+#  - 启用后，断言失败会记录现场并进入 Error_Handler
+#  - 可通过调试器查看 `Asserter::source()` 对应的断言信息
 
-set(ENABLE_ASSERTER_ASSERT ON)
+set(ENABLE_RUNTIME_ASSERT ON)
 # ======================================================
 
 # Setup compiler settings
@@ -92,7 +91,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
     # DEBUG_ARM
-    ENABLE_ASSERTER_ASSERT=$<BOOL:${ENABLE_ASSERTER_ASSERT}>
+    ENABLE_RUNTIME_ASSERT=$<BOOL:${ENABLE_RUNTIME_ASSERT}>
 )
 
 # Remove wrong libob.a library dependency when using cpp files

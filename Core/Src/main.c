@@ -258,8 +258,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
+  __HAL_RCC_DMA1_CLK_DISABLE();
+  __HAL_RCC_DMA2_CLK_DISABLE();
+  __HAL_RCC_DMA2D_CLK_DISABLE();
   while (1)
   {
   }

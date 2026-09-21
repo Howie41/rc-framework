@@ -1,4 +1,4 @@
-#include "rtos_asserter.hpp"
+#include "asserter.hpp"
 #include "rtos_task.hpp"
 #include "memory_map.h"
 #include "pid_controller.hpp"
@@ -27,7 +27,7 @@ RAM_D1 rtos::Queue<uint8_t, 12> test_queue;
 void producer_entry(void* arg) {
     uint8_t counter = 0;
     for (;;) {
-        RTOS_ASSERTER_ASSERT(counter <= 2);
+        RUNTIME_ASSERT(counter <= 2);
         test_queue.put(++counter);
         rtos::delay((1000U));
     }
