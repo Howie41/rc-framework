@@ -1,9 +1,9 @@
 #pragma once
 
+#include "main.h"
 #include "FreeRTOS.h"
-#include "projdefs.h"
+#include "asserter.hpp"
 #include "queue.h"
-#include "rtos_asserter.hpp"
 #include "rtos_task.hpp"
 
 #include <cstddef>
@@ -30,28 +30,20 @@ class QueueManager {
     friend class Queue;
 
 private:
-    QueueBase* m_head{nullptr};
-    bool m_initialized{false};
-    size_t m_count{0};
+    inline static QueueBase* m_head{nullptr};
+    inline static bool m_initialized{false};
+    inline static size_t m_count{0};
 
-    QueueManager() = default;
+    QueueManager() = delete;
 
-    void register_queue(QueueBase* queue) {
-        RTOS_ASSERTER_ASSERT(!m_initialized);
+    static void register_queue(QueueBase* queue) {
+        RUNTIME_ASSERT(!m_initialized);
         queue->m_next = m_head;
         m_head = queue;
     }
 
 public:
-    QueueManager(const QueueManager&) = delete;
-    QueueManager& operator=(const QueueManager&) = delete;
-
-    static QueueManager& instance() {
-        static QueueManager manager;
-        return manager;
-    }
-
-    void init() {
+    static void init() {
         if (m_initialized) {
             return;
         }
@@ -64,7 +56,7 @@ public:
         }
     }
 
-    size_t get_count() const {
+    static size_t get_count() {
         return m_count;
     }
 };
@@ -93,7 +85,7 @@ private:
             return true;
         }
 
-        RTOS_ASSERTER_ASSERT(!is_irq_context());
+        RUNTIME_ASSERT(!is_irq_context());
         m_queue_handle = xQueueCreateStatic(
             static_cast<UBaseType_t>(QueueSize),
             static_cast<UBaseType_t>(sizeof(T)),
@@ -111,7 +103,7 @@ public:
     ~Queue() = default;
 
     explicit Queue() {
-        QueueManager::instance().register_queue(this);
+        QueueManager::register_queue(this);
     }
 
     /**
@@ -130,12 +122,12 @@ public:
      * @return 在指定时间内成功放入返回 `true`，否则返回 `false`
     */
     bool put(const T& item_ref, uint32_t timeout_ms = 0) {
-        RTOS_ASSERTER_ASSERT(m_queue_handle != nullptr);
+        RUNTIME_ASSERT(m_queue_handle != nullptr);
 
         BaseType_t status;
 
         if (is_irq_context()) {
-            RTOS_ASSERTER_ASSERT(timeout_ms == 0);
+            RUNTIME_ASSERT(timeout_ms == 0);
             BaseType_t higher_priority_task_woken = pdFALSE;
             status = xQueueSendToBackFromISR(
                 m_queue_handle,
@@ -162,7 +154,7 @@ public:
      */
     bool overwrite(const T& item_ref) {
         static_assert(QueueSize == 1, "overwrite is only supported for queues of length 1");
-        RTOS_ASSERTER_ASSERT(m_queue_handle != nullptr);
+        RUNTIME_ASSERT(m_queue_handle != nullptr);
 
         BaseType_t status;
 
@@ -192,13 +184,13 @@ public:
      * - 获取成功时，用 `result.value()` 获取取出的元素
     */
     [[nodiscard]] std::optional<T> get(uint32_t timeout_ms = 0) {
-        RTOS_ASSERTER_ASSERT(m_queue_handle != nullptr);
+        RUNTIME_ASSERT(m_queue_handle != nullptr);
 
         T gotten_item{};
         BaseType_t status;
 
         if (is_irq_context()) {
-            RTOS_ASSERTER_ASSERT(timeout_ms == 0);
+            RUNTIME_ASSERT(timeout_ms == 0);
             BaseType_t higher_priority_task_woken = pdFALSE;
             status = xQueueReceiveFromISR(
                 m_queue_handle,
@@ -228,13 +220,13 @@ public:
      * @return 查看成功时返回 `std::optional` 包裹的元素，失败时返回 `std::nullopt`
     */
     [[nodiscard]] std::optional<T> peek(uint32_t timeout_ms = 0) {
-        RTOS_ASSERTER_ASSERT(m_queue_handle != nullptr);
+        RUNTIME_ASSERT(m_queue_handle != nullptr);
 
         T peeked_item{};
         BaseType_t status;
 
         if (is_irq_context()) {
-            RTOS_ASSERTER_ASSERT(timeout_ms == 0);
+            RUNTIME_ASSERT(timeout_ms == 0);
             status = xQueuePeekFromISR(m_queue_handle, &peeked_item);
         } else {
             status = xQueuePeek(

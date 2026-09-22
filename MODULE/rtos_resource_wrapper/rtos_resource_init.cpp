@@ -4,6 +4,6 @@
 #include "rtos_queue.hpp"
 
 extern "C" void rtos_resource_init(void) {
-    rtos::QueueManager::instance().init();
-    rtos::TaskManager::instance().init();
+    rtos::QueueManager::init();
+    rtos::TaskManager::init();
 }

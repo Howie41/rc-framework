@@ -1,5 +1,5 @@
+#include "main.h"
 #include "robot_init.h"
-
 #include "bsp_dwt.hpp"
 
 void robot_init() {

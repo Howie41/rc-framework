@@ -2,14 +2,11 @@
 
 #include "FreeRTOS.h"
 #include "FreeRTOSConfig.h"
-#include "cmsis_os2.h"
-#include "projdefs.h"
-#include <cstdint>
-#include CMSIS_device_header
-#include "portmacro.h"
-#include "rtos_asserter.hpp"
+#include "asserter.hpp"
+#include "main.h"
 #include "task.h"
 
+#include <cstdint>
 #include <cstddef>
 
 namespace rtos {
@@ -62,28 +59,20 @@ class TaskManager {
     friend class Task;
 
 private:
-    TaskBase* m_head{nullptr};
-    bool m_initialized{false};
-    size_t m_count{0};
+    inline static TaskBase* m_head{nullptr};
+    inline static bool m_initialized{false};
+    inline static size_t m_count{0};
 
-    TaskManager() = default;
+    TaskManager() = delete;
 
-    void register_task(TaskBase* task) {
-        RTOS_ASSERTER_ASSERT(!m_initialized);
+    static void register_task(TaskBase* task) {
+        RUNTIME_ASSERT(!m_initialized);
         task->m_next = m_head;
         m_head = task;
     }
 
 public:
-    TaskManager(const TaskManager&) = delete;
-    TaskManager& operator=(const TaskManager&) = delete;
-
-    static TaskManager& instance() {
-        static TaskManager manager;
-        return manager;
-    }
-
-    void init() {
+    static void init() {
         if (m_initialized) {
             return;
         }
@@ -96,7 +85,7 @@ public:
         }
     }
 
-    size_t get_count() const {
+    static size_t get_count() {
         return m_count;
     }
 };
@@ -128,7 +117,7 @@ private:
             return true;
         }
 
-        RTOS_ASSERTER_ASSERT(!is_irq_context());
+        RUNTIME_ASSERT(!is_irq_context());
         m_task_handle = xTaskCreateStatic(
             EntryFunction,
             m_name,
@@ -152,7 +141,7 @@ public:
      * @param name 任务名称，会在 RTOS 内部注册，可以在 Ozone FreeRTOS 页面看到
      */
     explicit Task(const char* name) : m_name(name) {
-        TaskManager::instance().register_task(this);
+        TaskManager::register_task(this);
     }
 
     /**
