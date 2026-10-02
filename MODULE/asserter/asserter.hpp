@@ -47,5 +47,5 @@ public:
         }                                                              \
     } while (false)
 #else
-#define RUNTIME_ASSERT(condition) ((void)0)
+#define RUNTIME_ASSERT(condition) ((void)(condition))
 #endif

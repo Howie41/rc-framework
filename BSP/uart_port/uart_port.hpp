@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include "asserter.hpp"
 #include "main.h"
 #include "memory_map.h"
 
@@ -15,40 +16,66 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <utility>
 
 class UartPortManager;
 class UartPort {
     friend class UartPortManager;
 
 public:
-    // 根据官方文档，RxEvent 是 ReceiveToIdle 专用的 API
+    // 根据官方文档，ReceiveToIdleEvent 是 ReceiveToIdle 专用的 API
     // 在 DMA Circular 模式下，ReceiveToIdle_DMA 不会因为 IDLE 事件而停止接收
-    enum class RxEvent : std::uint8_t {
+    enum class ReceiveToIdleEvent : std::uint8_t {
         TransferComplete  = 0U,  // 对应 TC 事件，本轮传输完成
         HalfTransfer      = 1U,  // 对应 HT 事件，本轮传输过半
         IdleLine          = 2U  // 对应 IDLE 事件，串口接收线进入空闲状态
     };
 
     struct Callbacks {
-        using ErrorCode = std::uint32_t;
+    using ErrorCode = std::uint32_t;
 
-        void(*on_tx_complete)(UartPort&){nullptr};
+    void (*on_transmit_complete)(UartPort&){nullptr};
 
-         /** @attention 只有使用 receive 系列方法才会触发这个回调 */
-        void(*on_rx_complete)(UartPort&){nullptr};
+    /**
+     * 对应 receive / receive_it / receive_dma
+     */
+    void (*on_receive_complete)(UartPort&){nullptr};
 
-        /** @attention 只有使用 start_receive_to_idle 系列方法才会触发这个回调 */
-        void(*on_rx_event)(UartPort&, RxEvent, std::uint16_t){nullptr};
+    /**
+     * 对应 start_receive_to_idle_it /
+     * start_receive_to_idle_dma
+     *
+     * 每个 HAL ReceiveToIdleEvent 只调用一次
+     */
+    void (*on_receive_to_idle_event)(
+        UartPort&,
+        ReceiveToIdleEvent,
+        std::uint16_t
+    ){nullptr};
 
-        void(*on_error)(UartPort&, ErrorCode){nullptr};
-    };
+    /**
+     * 对应 start_receive_to_idle_it /
+     * start_receive_to_idle_dma
+     *
+     * - 有新的数据时就会触发
+     * - 一次接收事件可能触发多次
+     */
+    void (*on_receive_to_idle_chunk)(
+        UartPort&,
+        std::span<const std::uint8_t>
+    ){nullptr};
+
+    void (*on_error)(
+        UartPort&,
+        ErrorCode
+    ){nullptr};
+};
 
 protected:
     UART_HandleTypeDef& m_uart_handle;
     Callbacks m_callbacks;
 
     std::atomic<bool> m_is_tx_busy{false};
-
     bool try_acquire_tx() {
         bool expected = false;
 
@@ -59,10 +86,11 @@ protected:
             std::memory_order_relaxed
         );
     }
-
     void release_tx() {
         m_is_tx_busy.store(false, std::memory_order_release);
     }
+
+    virtual void handle_receive_to_idle_chunk(std::uint16_t size) {};
 
 public:
     explicit UartPort(UART_HandleTypeDef& huart, Callbacks callbacks);
@@ -122,6 +150,7 @@ public:
 
     HAL_StatusTypeDef start_transmit_it(std::span<const std::uint8_t> msg) {
         if (msg.size() > TxBufferSize) return HAL_ERROR;
+
         if (!try_acquire_tx()) return HAL_BUSY;
 
         std::ranges::copy(msg, m_tx_buffer.begin());
@@ -137,30 +166,46 @@ public:
 };
 
 
+/**
+ * @brief DMA 串口
+ * @attention 实例化时必须在前面加上 DMA_BUFFER_BSS 或 DMA_BUFFER_DATA 宏，否则DMA访问不到缓冲区
+ * @tparam TxBufferSize 发送缓冲区大小
+ * @tparam RxBufferSize 接收缓冲区大小
+ */
 template <
-    DMA_HandleTypeDef* DmaTxHandle = nullptr,
     std::uint16_t TxBufferSize = 0,
-    DMA_HandleTypeDef* DmaRxHandle = nullptr,
     std::uint16_t RxBufferSize = 0
 >
 class UartPortDma : public UartPort {
-    static_assert((DmaTxHandle == nullptr && TxBufferSize == 0) || 
-                  (DmaTxHandle != nullptr && TxBufferSize > 0), "wrong tx config");
-    static_assert((DmaRxHandle == nullptr && RxBufferSize == 0) || 
-                  (DmaRxHandle != nullptr && RxBufferSize > 0), "wrong rx config");
+    static bool buffer_in_dma_ram(const std::uint8_t* buffer, std::size_t size) {
+        // 与 STM32H723XG_FLASH.ld 中 RAM_D2 的地址和长度保持一致。
+        constexpr std::uintptr_t dma_ram_begin = 0x30000000U;
+        constexpr std::uintptr_t dma_ram_end = 0x30008000U;
+        const auto address = reinterpret_cast<std::uintptr_t>(buffer);
+        return address >= dma_ram_begin && address < dma_ram_end &&
+               size <= dma_ram_end - address;
+    }
 
 public:
-    inline static DMA_BUFFER std::array<std::uint8_t, TxBufferSize> m_tx_buffer;
-    inline static DMA_BUFFER std::array<std::uint8_t, RxBufferSize> m_rx_buffer;
+    std::array<std::uint8_t, TxBufferSize> m_tx_buffer;
+    std::array<std::uint8_t, RxBufferSize> m_rx_buffer;
 
     explicit UartPortDma(
         UART_HandleTypeDef& huart, 
         Callbacks callbacks
     ) : UartPort(huart, callbacks) {}
 
-    HAL_StatusTypeDef start_receive_to_idle_dma()
-        requires (DmaRxHandle != nullptr && RxBufferSize > 0)
-    {
+    HAL_StatusTypeDef start_receive_to_idle_dma(){
+        RUNTIME_ASSERT(RxBufferSize > 0);
+        RUNTIME_ASSERT(m_uart_handle.hdmarx != nullptr);
+        // 接收 DMA 应该设置为 CIRCULAR 模式
+        RUNTIME_ASSERT(m_uart_handle.hdmarx->Init.Mode == DMA_CIRCULAR);
+        RUNTIME_ASSERT(buffer_in_dma_ram(m_rx_buffer.data(), m_rx_buffer.size()));
+
+        // 已运行的环形接收不能重置读取位置。
+        if (m_uart_handle.RxState != HAL_UART_STATE_READY) return HAL_BUSY;
+        m_last_rx_buffer_pos = 0;
+
         auto result = HAL_UARTEx_ReceiveToIdle_DMA(
             &m_uart_handle,
             static_cast<std::uint8_t*>(m_rx_buffer.data()),
@@ -169,16 +214,15 @@ public:
         return result;
     }
 
-    HAL_StatusTypeDef start_transmit_dma(std::span<const std::uint8_t> msg)
-        requires (DmaTxHandle != nullptr && TxBufferSize > 0)
-    {
+    HAL_StatusTypeDef start_transmit_dma(std::span<const std::uint8_t> msg){
+        RUNTIME_ASSERT(TxBufferSize > 0);
+        RUNTIME_ASSERT(m_uart_handle.hdmatx != nullptr);
+        // 发送 DMA 应该设置为 NORMAL 模式
+        RUNTIME_ASSERT(m_uart_handle.hdmatx->Init.Mode == DMA_NORMAL);
+        RUNTIME_ASSERT(buffer_in_dma_ram(m_tx_buffer.data(), m_tx_buffer.size()));
+
         if (msg.size() > TxBufferSize) return HAL_ERROR;
-        if (m_uart_handle.hdmatx == nullptr) return HAL_ERROR;
-        if (m_uart_handle.hdmatx->Init.Mode == DMA_CIRCULAR) {
-            // 发送 DMA 不能设置成 Circular 模式
-            Error_Handler();
-            return HAL_ERROR;
-        }
+
         if (!try_acquire_tx()) return HAL_BUSY;
 
         std::ranges::copy(msg, m_tx_buffer.begin());
@@ -190,6 +234,46 @@ public:
         );
         if (result != HAL_OK) release_tx();
         return result;
+    }
+
+protected:
+    std::uint16_t m_last_rx_buffer_pos{0};
+
+    // 处理 receive_to_idle 事件产生的新增数据块
+    // 这里的 size 实际上表示 DMA 写到了缓冲区的哪个位置
+    void handle_receive_to_idle_chunk(std::uint16_t size) override {
+        RUNTIME_ASSERT(size > 0 && size <= RxBufferSize);
+
+        const auto new_pos = size;
+        const auto last_pos = m_last_rx_buffer_pos;
+        const auto callback = m_callbacks.on_receive_to_idle_chunk;
+        if (new_pos == last_pos) return;
+        m_last_rx_buffer_pos = new_pos;
+        if (callback == nullptr) return;
+
+        if (new_pos > last_pos) {
+            auto chunk = std::span<const std::uint8_t>(
+                m_rx_buffer.begin() + last_pos,
+                new_pos - last_pos
+            );
+            callback(*this, chunk);
+        } else {
+            // 发生了回绕
+            if (last_pos < RxBufferSize) {
+                auto tail_chunk = std::span<const std::uint8_t>(
+                    m_rx_buffer.begin() + last_pos,
+                    m_rx_buffer.size() - last_pos
+                );
+                callback(*this, tail_chunk);
+            }
+            if (new_pos > 0) {
+                auto head_chunk = std::span<const std::uint8_t>(
+                    m_rx_buffer.begin(),
+                    new_pos
+                );
+                callback(*this, head_chunk);
+            }
+        }
     }
 };
 
@@ -245,10 +329,9 @@ public:
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
 
-        // 解除忙碌状态
-        port->release_tx();
+        port->release_tx(); // 解除忙碌状态
 
-        auto callback = port->m_callbacks.on_tx_complete;
+        auto callback = port->m_callbacks.on_transmit_complete;
         if (callback == nullptr) return;
         callback(*port);
     }
@@ -257,7 +340,7 @@ public:
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
 
-        auto callback = port->m_callbacks.on_rx_complete;
+        auto callback = port->m_callbacks.on_receive_complete;
         if (callback == nullptr) return;
         callback(*port);
     }
@@ -265,10 +348,11 @@ public:
     inline static void hal_on_rx_event(UART_HandleTypeDef* huart, HAL_UART_RxEventTypeTypeDef event, std::uint16_t size) {
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
+        port->handle_receive_to_idle_chunk(size);
 
-        auto callback = port->m_callbacks.on_rx_event;
+        auto callback = port->m_callbacks.on_receive_to_idle_event;
         if (callback == nullptr) return;
-        callback(*port, static_cast<UartPort::RxEvent>(event), size);
+        callback(*port, static_cast<UartPort::ReceiveToIdleEvent>(event), size);
     }
 
     inline static void hal_on_error(UART_HandleTypeDef* huart, std::uint32_t error) {
@@ -286,7 +370,6 @@ inline UartPort::UartPort(
     Callbacks callbacks
 ) : m_uart_handle(huart),
 m_callbacks(callbacks) {
-    if (!UartPortManager::register_port(*this)) {
-        Error_Handler();
-    }
+    auto registered = UartPortManager::register_port(*this);
+    RUNTIME_ASSERT(registered); // 这里断言失败说明注册失败了
 }
