@@ -43,10 +43,15 @@ defined in linker script */
 .word  _sbss
 /* end address for the .bss section. defined in linker script */
 .word  _ebss
-/* start address for the .ram_d1 section. defined in linker script */
-.word  _sram_d1
-/* end address for the .ram_d1 section. defined in linker script */
-.word  _eram_d1
+/* D1/D2 DATA、BSS 段的起止地址，由链接脚本定义。 */
+.word  _sram_d1_data
+.word  _eram_d1_data
+.word  _sram_d1_bss
+.word  _eram_d1_bss
+.word  _sdma_buffer_data
+.word  _edma_buffer_data
+.word  _sdma_buffer_bss
+.word  _edma_buffer_bss
 /* stack used for SystemInit_ExtMemCtl; always internal RAM used */
 
 /**
@@ -116,19 +121,67 @@ LoopFillZerobss:
   cmp r2, r4
   bcc FillZerobss
 
-/* Zero fill the ram_d1 segment. */
-  ldr r2, =_sram_d1
-  ldr r4, =_eram_d1
+/* 将 D1 DATA 的初值从 Flash 复制到 AXI SRAM。 */
+  ldr r0, =_sram_d1_data
+  ldr r1, =_eram_d1_data
+  ldr r2, =_siram_d1_data
   movs r3, #0
-  b LoopFillZeroram_d1
+  b LoopCopyRamD1Data
 
-FillZeroram_d1:
+CopyRamD1Data:
+  ldr r4, [r2, r3]
+  str r4, [r0, r3]
+  adds r3, r3, #4
+
+LoopCopyRamD1Data:
+  adds r4, r0, r3
+  cmp r4, r1
+  bcc CopyRamD1Data
+
+/* 将 DMA DATA 的初值从 Flash 复制到 D2 SRAM。 */
+  ldr r0, =_sdma_buffer_data
+  ldr r1, =_edma_buffer_data
+  ldr r2, =_sidma_buffer_data
+  movs r3, #0
+  b LoopCopyDmaData
+
+CopyDmaData:
+  ldr r4, [r2, r3]
+  str r4, [r0, r3]
+  adds r3, r3, #4
+
+LoopCopyDmaData:
+  adds r4, r0, r3
+  cmp r4, r1
+  bcc CopyDmaData
+
+/* 清零 D1 BSS 段。 */
+  ldr r2, =_sram_d1_bss
+  ldr r4, =_eram_d1_bss
+  movs r3, #0
+  b LoopFillZeroRamD1Bss
+
+FillZeroRamD1Bss:
   str  r3, [r2]
   adds r2, r2, #4
 
-LoopFillZeroram_d1:
+LoopFillZeroRamD1Bss:
   cmp r2, r4
-  bcc FillZeroram_d1
+  bcc FillZeroRamD1Bss
+
+/* 清零 DMA BSS 段。 */
+  ldr r2, =_sdma_buffer_bss
+  ldr r4, =_edma_buffer_bss
+  movs r3, #0
+  b LoopFillZeroDmaBss
+
+FillZeroDmaBss:
+  str  r3, [r2]
+  adds r2, r2, #4
+
+LoopFillZeroDmaBss:
+  cmp r2, r4
+  bcc FillZeroDmaBss
 
 /* Call static constructors */
     bl __libc_init_array

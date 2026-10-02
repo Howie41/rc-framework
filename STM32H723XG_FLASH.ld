@@ -240,23 +240,46 @@ SECTIONS
   } >DTCMRAM
   PROVIDE( __non_tls_bss_start = ADDR(.bss) );
 
-  /* DMA buffers must not be placed in DTCMRAM (DMA inaccessible on H7). */
-  .dma_buffer (NOLOAD) : ALIGN(32)
+  /* D2 SRAM：DATA 的初值存于 Flash，启动时复制到 DMA 可访问的内存。 */
+  .dma_buffer_data : ALIGN(32)
   {
-    *(.dma_buffer)
-    *(.dma_buffer*)
+    _sdma_buffer_data = .;
+    *(.dma_buffer_data)
+    *(.dma_buffer_data.*)
     . = ALIGN(32);
+    _edma_buffer_data = .;
+  } >RAM_D2 AT> FLASH
+  _sidma_buffer_data = LOADADDR(.dma_buffer_data);
+
+  /* D2 BSS 不占用 Flash 初值空间，启动时由 Reset_Handler 清零。 */
+  .dma_buffer_bss (NOLOAD) : ALIGN(32)
+  {
+    _sdma_buffer_bss = .;
+    *(.dma_buffer_bss)
+    *(.dma_buffer_bss.*)
+    . = ALIGN(32);
+    _edma_buffer_bss = .;
   } >RAM_D2
 
-  /* Task stacks and control blocks can be placed here when DMA access is not needed.
-   * Zero-filled at startup like .bss — no flash init values required. */
-  .ram_d1 (NOLOAD) : ALIGN(8)
+  /* D1 AXI SRAM：DATA 的初值存于 Flash，启动时复制到 RAM。 */
+  .ram_d1_data : ALIGN(8)
   {
-    _sram_d1 = .;       /* create a global symbol at ram_d1 start */
-    *(.ram_d1)
-    *(.ram_d1*)
+    _sram_d1_data = .;
+    *(.ram_d1_data)
+    *(.ram_d1_data.*)
     . = ALIGN(8);
-    _eram_d1 = .;       /* create a global symbol at ram_d1 end */
+    _eram_d1_data = .;
+  } >RAM_D1 AT> FLASH
+  _siram_d1_data = LOADADDR(.ram_d1_data);
+
+  /* D1 BSS 不占用 Flash 初值空间，启动时由 Reset_Handler 清零。 */
+  .ram_d1_bss (NOLOAD) : ALIGN(8)
+  {
+    _sram_d1_bss = .;
+    *(.ram_d1_bss)
+    *(.ram_d1_bss.*)
+    . = ALIGN(8);
+    _eram_d1_bss = .;
   } >RAM_D1
 
   PROVIDE( __bss_start = __tbss_start );
