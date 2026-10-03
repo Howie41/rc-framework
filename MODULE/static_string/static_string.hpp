@@ -10,16 +10,16 @@
 
 template <std::size_t Capacity>
 class StaticString {
-private:
+public:
+    // 结构化类型要求数据成员公开，供编译期非类型模板参数使用
     std::array<char, Capacity + 1> m_array{};
     std::size_t m_length{0};
 
-public:
-    StaticString() : m_length(0) {
+    constexpr StaticString() : m_length(0) {
         m_array[0] = '\0';
     }
 
-    StaticString(const char* str) : m_length(0) {
+    constexpr StaticString(const char* str) : m_length(0) {
         while (m_length < Capacity && str[m_length] != '\0') {
             m_array[m_length] = str[m_length];
             m_length += 1;
@@ -45,19 +45,19 @@ public:
         m_array[m_length] = '\0';
     }
 
-    [[nodiscard]] std::size_t size() const {
+    [[nodiscard]] constexpr std::size_t size() const {
         return m_length;
     }
 
-    [[nodiscard]] std::size_t capacity() const {
+    [[nodiscard]] constexpr std::size_t capacity() const {
         return Capacity;
     }
 
-    [[nodiscard]] bool empty() const {
+    [[nodiscard]] constexpr bool empty() const {
         return m_length == 0;
     }
 
-    [[nodiscard]] const char* data() const {
+    [[nodiscard]] constexpr const char* data() const {
         return m_array.data();
     }
 
@@ -65,8 +65,14 @@ public:
         return {m_array.data(), m_length};
     }
 
-    [[nodiscard]] const char* c_str() const {
+    [[nodiscard]] constexpr const char* c_str() const {
         return m_array.data();
+    }
+
+    // 可能在编译期计算
+    template <std::size_t N>
+    [[nodiscard]] constexpr bool operator==(const StaticString<N>& other) const {
+        return std::ranges::equal(data(), data() + size(), other.data(), other.data() + other.size());
     }
 
     void clear() {
@@ -80,7 +86,7 @@ public:
         if (count == 0) { return false; }
         if (count > Capacity - m_length) { return false; }
 
-        std::char_traits<char>::move(m_array.data() + m_length, other.data(), count);
+        std::char_traits<char>::copy(m_array.data() + m_length, other.data(), count);
 
         m_length += count;
         m_array[m_length] = '\0';
@@ -96,3 +102,6 @@ public:
         return true;
     }
 };
+
+template <std::size_t N>
+StaticString(const char (&)[N]) -> StaticString<N - 1>;

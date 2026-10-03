@@ -4,10 +4,12 @@
 #include "FreeRTOSConfig.h"
 #include "asserter.hpp"
 #include "main.h"
+#include "static_string.hpp"
 #include "task.h"
 
 #include <cstdint>
 #include <cstddef>
+#include <type_traits>
 
 namespace rtos {
 
@@ -55,7 +57,7 @@ protected:
 };
 
 class TaskManager {
-    template <void (*EntryFunction)(void*), size_t StackBytes, TaskPriority Priority>
+    template <StaticString Name, auto EntryFunction, size_t StackBytes, TaskPriority Priority>
     friend class Task;
 
 private:
@@ -91,12 +93,16 @@ public:
 };
 
 /**
- * @tparam EntryFunction 任务入口函数的指针，必须是 `void (*)(void*)` 类型
+ * @tparam Name 编译期任务名称，例如 `"led_test"`
+ * @tparam EntryFunction 无捕获 Lambda，签名为 `void()`
  * @tparam StackBytes 任务栈大小（字节），必须是 4 的倍数
  * @tparam Priority 任务优先级，例如 `rtos::TaskPriority::Normal`
  */
-template <void (*EntryFunction)(void*), size_t StackBytes = 128 * 4, TaskPriority Priority = TaskPriority::Normal>
+template <StaticString Name, auto EntryFunction, size_t StackBytes = 256 * 4, TaskPriority Priority = TaskPriority::Normal>
 class Task : TaskBase {
+    static_assert(std::is_class_v<decltype(EntryFunction)> &&
+                  std::is_convertible_v<decltype(EntryFunction), void (*)()>,
+                  "task entry must be a captureless void() lambda");
     static_assert(StackBytes >= 128 * 4, "stack too small");
     static_assert(StackBytes % sizeof(StackType_t) == 0, "wrong stack size");
     static_assert(Priority >= TaskPriority::Idle, "priority too low");
@@ -104,9 +110,12 @@ class Task : TaskBase {
     static_assert(static_cast<UBaseType_t>(Priority) < configMAX_PRIORITIES, "priority too high");
 
 private:
+    static inline void task_entry(void*) {
+        EntryFunction();
+    }
+
     StaticTask_t m_control_block;
     StackType_t m_task_stack[StackBytes / sizeof(StackType_t)];
-    const char* m_name{nullptr};
     const UBaseType_t m_priority{static_cast<UBaseType_t>(Priority)};
 
     TaskHandle_t m_task_handle{nullptr};
@@ -119,8 +128,8 @@ private:
 
         RUNTIME_ASSERT(!is_irq_context());
         m_task_handle = xTaskCreateStatic(
-            EntryFunction,
-            m_name,
+            task_entry,
+            Name.c_str(),
             static_cast<configSTACK_DEPTH_TYPE>(StackBytes / sizeof(StackType_t)),
             nullptr,
             m_priority,
@@ -138,9 +147,8 @@ public:
 
     /**
      * @brief 创建任务
-     * @param name 任务名称，会在 RTOS 内部注册，可以在 Ozone FreeRTOS 页面看到
      */
-    explicit Task(const char* name) : m_name(name) {
+    Task() {
         TaskManager::register_task(this);
     }
 

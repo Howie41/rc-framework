@@ -1,10 +1,8 @@
 #include "rtos_task.hpp"
 #include "uart_port.hpp"
 
-void test_entry(void* arg) {
+rtos::Task<"led_test", [] {
     while (true) {
         rtos::delay(100);
     }
-}
-rtos::Task<&test_entry, 1024 * 4, rtos::TaskPriority::Normal>
-led_test_task("led_test");
+}, 1024 * 4, rtos::TaskPriority::Normal> led_test_task;
