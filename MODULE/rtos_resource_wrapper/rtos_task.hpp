@@ -4,6 +4,7 @@
 #include "FreeRTOSConfig.h"
 #include "asserter.hpp"
 #include "main.h"
+#include "rtos_utility.hpp"
 #include "static_string.hpp"
 #include "task.h"
 
@@ -12,21 +13,6 @@
 #include <type_traits>
 
 namespace rtos {
-
-/**
- * @brief 判断当前是否处于中断上下文或中断屏蔽状态
- */
-[[nodiscard]] inline bool is_irq_context() noexcept {
-    if (__get_IPSR() != 0U) {
-        return true;
-    }
-
-    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
-        return false;
-    }
-
-    return (__get_PRIMASK() != 0U) || (__get_BASEPRI() != 0U);
-}
 
 /**
  * @brief 任务优先级

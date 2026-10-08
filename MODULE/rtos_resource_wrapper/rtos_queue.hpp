@@ -4,7 +4,7 @@
 #include "FreeRTOS.h"
 #include "asserter.hpp"
 #include "queue.h"
-#include "rtos_task.hpp"
+#include "rtos_utility.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -118,7 +118,7 @@ public:
      * @attention RTOS内部会复制元素字节，元素必须平凡可拷贝
      * @attention 中断上下文中 `timeout_ms` 必须为 0
      * @param item_ref 要放入的元素的引用
-     * @param timeout_ms 超时时间，单位毫秒
+     * @param timeout_ms 超时时间，单位毫秒；rtos::wait_forever 表示永久等待
      * @return 在指定时间内成功放入返回 `true`，否则返回 `false`
     */
     bool put(const T& item_ref, uint32_t timeout_ms = 0) {
@@ -139,7 +139,7 @@ public:
             status = xQueueSendToBack(
                 m_queue_handle,
                 &item_ref,
-                pdMS_TO_TICKS(timeout_ms)
+                timeout_ms_to_ticks(timeout_ms)
             );
         }
 
@@ -176,7 +176,7 @@ public:
     /**
      * @brief 从队列里获取元素
      * @attention 中断上下文中 `timeout_ms` 必须为 0
-     * @param timeout_ms 超时时间，单位毫秒
+     * @param timeout_ms 超时时间，单位毫秒；rtos::wait_forever 表示永久等待
      * @return 返回 `std::optional` 包裹的元素（获取失败时为空）
      * @code 简单食用方法：
      * - `auto result = queue.get();`
@@ -202,7 +202,7 @@ public:
             status = xQueueReceive(
                 m_queue_handle, 
                 &gotten_item, 
-                pdMS_TO_TICKS(timeout_ms)
+                timeout_ms_to_ticks(timeout_ms)
             );
         }
 
@@ -216,7 +216,7 @@ public:
     /**
      * @brief 查看队首元素但不将其移出队列
      * @attention 中断上下文中 `timeout_ms` 必须为 0
-     * @param timeout_ms 超时时间，单位毫秒
+     * @param timeout_ms 超时时间，单位毫秒；rtos::wait_forever 表示永久等待
      * @return 查看成功时返回 `std::optional` 包裹的元素，失败时返回 `std::nullopt`
     */
     [[nodiscard]] std::optional<T> peek(uint32_t timeout_ms = 0) {
@@ -232,7 +232,7 @@ public:
             status = xQueuePeek(
                 m_queue_handle,
                 &peeked_item,
-                pdMS_TO_TICKS(timeout_ms)
+                timeout_ms_to_ticks(timeout_ms)
             );
         }
 
