@@ -39,6 +39,10 @@ private:
 protected:
     TaskBase() = default;
     virtual ~TaskBase() = default;
+    /**
+     * @brief 在 RTOS 内部初始化任务
+     * @return 初始化成功返回 `true`，否则返回 `false`
+     */
     virtual bool init() = 0;
 };
 
@@ -53,6 +57,11 @@ private:
 
     TaskManager() = delete;
 
+    /**
+     * @brief 注册待初始化的任务
+     * @param task 要注册的任务对象指针
+     * @attention 必须在管理器初始化之前调用
+     */
     static void register_task(TaskBase* task) {
         RUNTIME_ASSERT(!m_initialized);
         task->m_next = m_head;
@@ -60,6 +69,7 @@ private:
     }
 
 public:
+    /** @brief 创建所有已注册的任务，重复调用不会再次创建 */
     static void init() {
         if (m_initialized) {
             return;
@@ -73,6 +83,10 @@ public:
         }
     }
 
+    /**
+     * @brief 获取成功创建的任务数量
+     * @return 成功创建的任务数量
+     */
     static size_t get_count() {
         return m_count;
     }
@@ -96,6 +110,7 @@ class Task : TaskBase {
     static_assert(static_cast<UBaseType_t>(Priority) < configMAX_PRIORITIES, "priority too high");
 
 private:
+    /** @brief 调用编译期指定的任务入口函数 */
     static inline void task_entry(void*) {
         EntryFunction();
     }
@@ -106,7 +121,11 @@ private:
 
     TaskHandle_t m_task_handle{nullptr};
 
-    // 在 RTOS 内部初始化任务
+    /**
+     * @brief 在 RTOS 内部创建任务，已创建时直接返回
+     * @return 句柄有效时返回 `true`，否则返回 `false`
+     * @attention 必须在非中断上下文中调用
+     */
     bool init() override {
         if (m_task_handle != nullptr) {
             return true;
@@ -139,6 +158,7 @@ public:
     }
 
     /**
+     * @brief 获取任务句柄
      * @return 任务句柄
      */
     TaskHandle_t handle() const {
