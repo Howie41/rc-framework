@@ -22,6 +22,10 @@ private:
 protected:
     QueueBase() = default;
     virtual ~QueueBase() = default;
+    /**
+     * @brief 在 RTOS 内部初始化队列
+     * @return 初始化成功返回 `true`，否则返回 `false`
+     */
     virtual bool init() = 0;
 };
 
@@ -36,6 +40,11 @@ private:
 
     QueueManager() = delete;
 
+    /**
+     * @brief 注册待初始化的队列
+     * @param queue 要注册的队列对象指针
+     * @attention 必须在管理器初始化之前调用
+     */
     static void register_queue(QueueBase* queue) {
         RUNTIME_ASSERT(!m_initialized);
         queue->m_next = m_head;
@@ -43,6 +52,7 @@ private:
     }
 
 public:
+    /** @brief 创建所有已注册的队列，重复调用不会再次创建 */
     static void init() {
         if (m_initialized) {
             return;
@@ -56,6 +66,10 @@ public:
         }
     }
 
+    /**
+     * @brief 获取成功创建的队列数量
+     * @return 成功创建的队列数量
+     */
     static size_t get_count() {
         return m_count;
     }
@@ -79,7 +93,11 @@ private:
     uint8_t m_queue_storage[QueueSize * sizeof(T)];
     QueueHandle_t m_queue_handle{nullptr};
 
-    // 在 RTOS 内部初始化队列
+    /**
+     * @brief 在 RTOS 内部创建队列，已创建时直接返回
+     * @return 句柄有效时返回 `true`，否则返回 `false`
+     * @attention 必须在非中断上下文中调用
+     */
     bool init() override {
         if (m_queue_handle != nullptr) {
             return true;
@@ -96,17 +114,21 @@ private:
     }
 
 public:
-    // 删除拷贝构造
     Queue(const Queue&) = delete;
     Queue& operator=(const Queue&) = delete;
 
     ~Queue() = default;
 
+    /**
+     * @brief 构造队列包装对象并注册到管理器
+     * @note RTOS 队列由管理器初始化时创建
+     */
     explicit Queue() {
         QueueManager::register_queue(this);
     }
 
     /**
+     * @brief 获取队列句柄
      * @return 队列句柄
      */
     QueueHandle_t handle() const {

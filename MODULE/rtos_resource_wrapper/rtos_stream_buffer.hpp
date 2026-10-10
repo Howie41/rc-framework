@@ -21,6 +21,10 @@ private:
 protected:
     StreamBufferBase() = default;
     virtual ~StreamBufferBase() = default;
+    /**
+     * @brief 在 RTOS 内部初始化流缓冲区
+     * @return 初始化成功返回 `true`，否则返回 `false`
+     */
     virtual bool init() = 0;
 };
 
@@ -35,6 +39,11 @@ private:
 
     StreamBufferManager() = delete;
 
+    /**
+     * @brief 注册待初始化的流缓冲区
+     * @param buffer 要注册的流缓冲区对象指针
+     * @attention 必须在管理器初始化之前调用
+     */
     static void register_stream_buffer(StreamBufferBase* buffer) {
         RUNTIME_ASSERT(!m_initialized);
         buffer->m_next = m_head;
@@ -43,7 +52,7 @@ private:
 
 public:
     /**
-     * @brief 创建所有已注册的流缓冲区；重复调用不会再次创建。
+     * @brief 创建所有已注册的流缓冲区，重复调用不会再次创建
      */
     static void init() {
         if (m_initialized) {
@@ -59,8 +68,8 @@ public:
     }
 
     /**
-     * @brief 获取成功创建的流缓冲区数量。
-     * @return 成功创建的流缓冲区数量。
+     * @brief 获取成功创建的流缓冲区数量
+     * @return 成功创建的流缓冲区数量
      */
     static size_t get_count() {
         return m_count;
@@ -68,11 +77,11 @@ public:
 };
 
 /**
- * @brief 静态分配的字节流缓冲区。
- * @tparam BufferSize 可存储的字节数，须满足当前 FreeRTOS 静态创建函数的最小长度要求。
- * @tparam TriggerLevel 唤醒等待接收任务所需的字节数，范围为 1 到 BufferSize。
- * @note 非零超时的同一收发方向须遵守 FreeRTOS 的单写者、单读者约束。
- * @note 零超时操作在临界区内复制数据，传输量越大，对中断延迟的影响越大。
+ * @brief 静态分配的字节流缓冲区
+ * @tparam BufferSize 可存储的字节数，须满足当前 FreeRTOS 静态创建函数的最小长度要求
+ * @tparam TriggerLevel 唤醒等待接收任务所需的字节数，范围为 1 到 BufferSize
+ * @note 非零超时的同一收发方向须遵守 FreeRTOS 的单写者、单读者约束
+ * @note 零超时操作在临界区内复制数据，传输量越大，对中断延迟的影响越大
  */
 template <size_t BufferSize, size_t TriggerLevel = 1>
 class StreamBuffer : StreamBufferBase {
@@ -86,6 +95,11 @@ private:
     uint8_t m_storage[BufferSize + 1]{};
     StreamBufferHandle_t m_handle{nullptr};
 
+    /**
+     * @brief 在 RTOS 内部创建流缓冲区，已创建时直接返回
+     * @return 句柄有效时返回 `true`，否则返回 `false`
+     * @attention 必须在非中断上下文中调用
+     */
     bool init() override {
         if (m_handle != nullptr) {
             return true;
@@ -101,6 +115,10 @@ private:
     }
 
 public:
+    /**
+     * @brief 构造流缓冲区包装对象并注册到管理器
+     * @note RTOS 流缓冲区由管理器初始化时创建
+     */
     StreamBuffer() {
         StreamBufferManager::register_stream_buffer(this);
     }
@@ -108,14 +126,18 @@ public:
     StreamBuffer& operator=(const StreamBuffer&) = delete;
     ~StreamBuffer() = default;
 
+    /**
+     * @brief 获取流缓冲区句柄
+     * @return 流缓冲区句柄，尚未创建时为 `nullptr`
+     */
     StreamBufferHandle_t handle() const {
         return m_handle;
     }
 
     /**
-     * @brief 向流缓冲区发送字节。
+     * @brief 向流缓冲区发送字节
      * @param data 输入缓冲区，要发送的字节从这里读取
-     * @param timeout_ms 最长等待时间，单位毫秒；0 表示不等待，rtos::wait_forever 表示永久等待。
+     * @param timeout_ms 最长等待时间，单位毫秒；0 表示不等待，rtos::wait_forever 表示永久等待
      * @return 实际发送的字节数，不一定读完输入缓冲区
      *
      * @attention
@@ -152,9 +174,9 @@ public:
     }
 
     /**
-     * @brief 从流缓冲区接收字节。
+     * @brief 从流缓冲区接收字节
      * @param output_buffer 输出缓冲区，接收到的字节写到这里
-     * @param timeout_ms 最长等待时间，单位毫秒；0 表示不等待，rtos::wait_forever 表示永久等待。
+     * @param timeout_ms 最长等待时间，单位毫秒；0 表示不等待，rtos::wait_forever 表示永久等待
      * @return 实际接收的字节数，不一定写满输出缓冲区
      *
      * @attention
