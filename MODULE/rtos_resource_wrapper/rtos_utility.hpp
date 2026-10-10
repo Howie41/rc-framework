@@ -11,6 +11,16 @@ namespace rtos {
 /** @brief 毫秒超时参数的永久等待值 */
 inline constexpr std::uint32_t wait_forever = 0xFFFFFFFFU;
 
+/** @brief 获取当前 RTOS tick；在任务上下文中调用。 */
+[[nodiscard]] inline TickType_t now_tick() noexcept {
+    return xTaskGetTickCount();
+}
+
+/** @brief 获取当前 RTOS 毫秒时间；在任务上下文中调用，允许 uint32_t 自然回绕。 */
+[[nodiscard]] inline std::uint32_t now_ms() noexcept {
+    return static_cast<std::uint32_t>(now_tick() * portTICK_PERIOD_MS);
+}
+
 /** @brief 将毫秒超时转换为 RTOS tick，保留永久等待语义 */
 [[nodiscard]] inline TickType_t timeout_ms_to_ticks(std::uint32_t timeout_ms) noexcept {
     return timeout_ms == wait_forever ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
