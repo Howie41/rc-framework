@@ -145,9 +145,7 @@ jobs:
             // 构建基础报告
             let body = `### ${statusEmoji} ${statusText}
             
-            共发现 \`🔴 ${errors} Errors\`，\`🟡 ${warnings} Warnings\`。
-            
-            ${isSuccess ? `> 🎉 恭喜，固件编译成功！你可以点击 [🔍 查看编译日志](${runUrl}) 检查潜在的 Warning。` : `> ⚠️ **注意**: 编译未通过！请直接点击 [❌ 查看具体报错日志](${runUrl}) 快速定位并修复。`}
+            共发现 🔴 \`${errors}\` Errors，🟡 \`${warnings}\` Warnings。
             `;
             
             if (diagnostics) {
