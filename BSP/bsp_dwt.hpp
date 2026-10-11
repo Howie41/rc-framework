@@ -1,16 +1,11 @@
 #pragma once
 
-#include "stm32h7xx_hal.h"
+#include "main.h"
+#include "memory_map.h"
 
 #include <atomic>
 #include <cstdint>
 #include <limits>
-
-#if defined(__GNUC__)
-#define DWT_ITCM_FUNC __attribute__((section(".itcm_text")))
-#else
-#define DWT_ITCM_FUNC
-#endif
 
 /**
  * @brief DWT 系统时间拆分值。
@@ -89,7 +84,7 @@ public:
      * @param cnt_last 上次记录的 CYCCNT 值，函数返回前会更新为当前值。
      * @return 时间差，单位为秒，float 精度。
      */
-    DWT_ITCM_FUNC float get_delta_t(uint32_t *cnt_last)
+    ITCM_FUNCTION float get_delta_t(uint32_t *cnt_last)
     {
         const uint32_t cnt_now = DWT->CYCCNT;
         const float dt =
