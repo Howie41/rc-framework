@@ -2,18 +2,13 @@
 
 #include "bsp_dwt.hpp"
 #include "pid_manager.hpp"
+#include "memory_map.h"
 
 #include <bitset>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-
-#if defined(__GNUC__)
-#define PID_ITCM_FUNC __attribute__((section(".itcm_text"), noinline))
-#else
-#define PID_ITCM_FUNC
-#endif
 
 class PidController {
 public:
@@ -142,7 +137,7 @@ public:
      * @param ref 目标参考值。
      * @return 经过限幅后的控制器输出。
      */
-    PID_ITCM_FUNC float calculate(float measure, float ref) {
+    ITCM_FUNCTION float calculate(float measure, float ref) {
         if (has_improvement(error_handle)) {
             pid_error_handle();
         }
@@ -483,5 +478,3 @@ private:
 
     friend class PidManager;
 };
-
-#undef PID_ITCM_FUNC
