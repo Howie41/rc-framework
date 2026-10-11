@@ -34,36 +34,95 @@ jobs:
         with:
           release: 'latest'
 
-      - name: Configure CMake
-        run: cmake -B build/Debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake
-
-      - name: Build and Parse Logs
+      - name: Configure, Build and Parse Logs
+        id: build
+        shell: bash
         run: |
-          # 1. 执行编译并记录日志
-          cmake --build build/Debug > build.log 2>&1 && echo "BUILD_STATUS=success" >> $GITHUB_ENV || echo "BUILD_STATUS=failure" >> $GITHUB_ENV
-          
-          # 2. 安全统计 Warning 和 Error 数量
-          WARNINGS=$(grep -i "warning:" build.log | wc -l | awk '{print $1}')
-          ERRORS=$(grep -i "error:" build.log | wc -l | awk '{print $1}')
-          
-          echo "WARNINGS=$WARNINGS" >> $GITHUB_ENV
-          echo "ERRORS=$ERRORS" >> $GITHUB_ENV
-          
-          # 3. 🚀 核心新增：利用 sed 抓取从 Memory region 开始到 FLASH 结束的这一段内存报告
-          # 使用 GitHub 规定的 <<EOF 多行变量语法进行安全写入
-          echo "MEMORY_REPORT<<EOF" >> $GITHUB_ENV
-          if grep -q "Memory region" build.log; then
-            sed -n '/Memory region/,/FLASH:/p' build.log
-          else
-            echo "未检测到内存分配报告（可能编译失败导致未生成 size 信息）"
+          # tee 保留完整 Actions 日志；暂缓失败退出，先生成报告和评论。
+          set +e
+          cmake -B build/Debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake 2>&1 | tee build.log
+          result=${PIPESTATUS[0]}
+          if [ "$result" -eq 0 ]; then
+            cmake --build build/Debug 2>&1 | tee -a build.log
+            result=${PIPESTATUS[0]}
           fi
-          echo "EOF" >> $GITHUB_ENV
+          set -e
+          if [ "$result" -eq 0 ]; then
+            export BUILD_STATUS=success
+          else
+            export BUILD_STATUS=failure
+          fi
+          echo "BUILD_STATUS=$BUILD_STATUS" >> "$GITHUB_ENV"
+          echo "status=$BUILD_STATUS" >> "$GITHUB_OUTPUT"
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          log = Path("build.log").read_text(encoding="utf-8", errors="replace")
+          log = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", log)
+          lines = log.splitlines()
+          warning = re.compile(r"\bwarning:|CMake Warning", re.I)
+          error = re.compile(r"\b(?:fatal )?error:|CMake Error|undefined reference|multiple definition|region .*overflowed|(?:g?make)(?:\[\d+\])?: \*\*\*", re.I)
+          warnings = sum(bool(warning.search(line)) for line in lines)
+          errors = sum(bool(error.search(line)) for line in lines)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"WARNINGS={warnings}\nERRORS={errors}\n")
+
+          # 合并重叠上下文，保留源码行、插入符和 CMake 的调用信息。
+          selected = set()
+          for i, line in enumerate(lines):
+              if warning.search(line) or error.search(line):
+                  selected.update(range(max(0, i - 2), min(len(lines), i + 6)))
+          # 未识别的失败也展示尾部日志，不以零条诊断误判为编译成功。
+          if not selected and os.environ["BUILD_STATUS"] == "failure":
+              selected.update(range(max(0, len(lines) - 60), len(lines)))
+          excerpt = []
+          previous = -1
+          for i in sorted(selected):
+              if previous >= 0 and i > previous + 1:
+                  excerpt.append("...")
+              excerpt.append(lines[i])
+              previous = i
+          # 控制 PR 评论长度，完整日志仍可在 Actions 中查看。
+          diagnostic = "\n".join(excerpt[:160])
+          if len(excerpt) > 160 or len(diagnostic) > 16000:
+              diagnostic = diagnostic[:16000] + "\n...（摘录已截断，请查看完整 Actions 日志）"
+          Path("diagnostics.log").write_text(diagnostic, encoding="utf-8")
+          if diagnostic:
+              print("::group::Warning / Error 关键日志")
+              # 不将日志中的字符串解释为 Actions workflow commands。
+              print("::stop-commands::cmake-diagnostic-output")
+              print(diagnostic)
+              print("::cmake-diagnostic-output::")
+              print("::endgroup::")
+
+          memory = []
+          for i, line in enumerate(lines):
+              if "Memory region" in line:
+                  memory.append(line)
+                  for row in lines[i + 1:]:
+                      if not re.match(r"\s*\S+:\s+\d", row):
+                          break
+                      memory.append(row)
+                  break
+          Path("memory-report.log").write_text("\n".join(memory), encoding="utf-8")
+          PY
 
       - name: Comment on PR
         uses: actions/github-script@v7
         if: always()
         with:
           script: |
+            const fs = require('fs');
+            const readLog = path => fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : '';
+            // 使用足够长的围栏，避免日志中的反引号破坏 Markdown。
+            const codeBlock = text => {
+              const longest = Math.max(0, ...(text.match(/`+/g) || []).map(run => run.length));
+              const fence = '`'.repeat(Math.max(3, longest + 1));
+              return `${fence}text\n${text}\n${fence}`;
+            };
             const prNumber = context.issue.number || context.payload.inputs?.pr_number;
             
             if (!prNumber) {
@@ -73,31 +132,30 @@ jobs:
             
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             
-            const warnings = process.env.WARNINGS;
-            const errors = process.env.ERRORS;
+            const warnings = process.env.WARNINGS ?? '未统计';
+            const errors = process.env.ERRORS ?? '未统计';
             const status = process.env.BUILD_STATUS;
-            const memoryReport = process.env.MEMORY_REPORT; // 获取多行内存报告
+            const memoryReport = readLog('memory-report.log');
+            const diagnostics = readLog('diagnostics.log');
             
             const isSuccess = status === "success";
             const statusEmoji = isSuccess ? "✅" : "❌";
-            const statusText = isSuccess ? "编译通过" : "编译失败";
+            const statusText = isSuccess ? "编译检查通过" : "编译检查失败";
             
             // 构建基础报告
-            let body = `### 🛠️ CMake 自动化编译报告 (Debug/ARM)
+            let body = `### ${statusEmoji} ${statusText}
             
-            **编译状态**: ${statusEmoji} **${statusText}**
-            
-            | 统计项 | 数量 |
-            | :--- | :--- |
-            | 🔴 **Errors** | \`${errors}\` |
-            | 🟡 **Warnings** | \`${warnings}\` |
+            共发现 \`🔴 ${errors} Errors\`，\`🟡 ${warnings} Warnings\`。
             
             ${isSuccess ? `> 🎉 恭喜，固件编译成功！你可以点击 [🔍 查看编译日志](${runUrl}) 检查潜在的 Warning。` : `> ⚠️ **注意**: 编译未通过！请直接点击 [❌ 查看具体报错日志](${runUrl}) 快速定位并修复。`}
             `;
             
-            // 🚀 核心新增：如果抓取到了内存报告，将其以漂亮的文本代码块形式追加到评论里
+            if (diagnostics) {
+              body += `\n### 🔎 Warning / Error 关键日志\n${codeBlock(diagnostics)}\n`;
+            }
+
             if (memoryReport) {
-              body += `\n### 📊 固件内存分配报告 (Memory Region)\n\`\`\`text\n${memoryReport}\n\`\`\`\n`;
+              body += `\n### 📊 固件内存分配报告 (Memory Region)\n${codeBlock(memoryReport)}\n`;
             }
             
             await github.rest.issues.createComment({
@@ -106,3 +164,7 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
+
+      - name: Fail workflow if compilation failed
+        if: ${{ always() && steps.build.outputs.status == 'failure' }}
+        run: exit 1
