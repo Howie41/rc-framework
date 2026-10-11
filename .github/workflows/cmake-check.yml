@@ -14,7 +14,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -26,6 +26,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Post pending PR comment
+        id: pending-comment
+        # Fork PR 的只读 token 等评论权限问题不应阻止编译。
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number || context.payload.inputs?.pr_number;
+            if (!prNumber) {
+              console.log('未指定 PR，跳过评论。');
+              return;
+            }
+            if (!/^[1-9]\d*$/.test(String(prNumber))) {
+              throw new Error('PR 编号必须是正整数。');
+            }
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: comment } = await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: Number(prNumber),
+              body: `### ⏳ 正在进行编译检查\n\n[查看检查进度](${runUrl})`
+            });
+            core.setOutput('comment_id', String(comment.id));
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -110,9 +133,13 @@ jobs:
           Path("memory-report.log").write_text("\n".join(memory), encoding="utf-8")
           PY
 
-      - name: Comment on PR
+      - name: Update PR comment with build report
         uses: actions/github-script@v7
-        if: always()
+        if: ${{ always() && steps.pending-comment.outputs.comment_id != '' }}
+        continue-on-error: true
+        env:
+          COMMENT_ID: ${{ steps.pending-comment.outputs.comment_id }}
+          BUILD_CANCELLED: ${{ job.status == 'cancelled' }}
         with:
           script: |
             const fs = require('fs');
@@ -123,14 +150,16 @@ jobs:
               const fence = '`'.repeat(Math.max(3, longest + 1));
               return `${fence}text\n${text}\n${fence}`;
             };
-            const prNumber = context.issue.number || context.payload.inputs?.pr_number;
-            
-            if (!prNumber) {
-              console.log("提示：未检测到自动 PR 上下文，且未手动输入 PR 编号。将跳过评论步骤。");
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            if (process.env.BUILD_CANCELLED === 'true') {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: Number(process.env.COMMENT_ID),
+                body: `### ⏹️ 编译检查已取消\n\n本次检查已被取消（例如分支有新的提交）。\n\n[查看检查日志](${runUrl})`
+              });
               return;
             }
-            
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             
             const warnings = process.env.WARNINGS ?? '未统计';
             const errors = process.env.ERRORS ?? '未统计';
@@ -146,6 +175,8 @@ jobs:
             let body = `### ${statusEmoji} ${statusText}
             
             共发现 🔴 \`${errors}\` Errors，🟡 \`${warnings}\` Warnings。
+
+            [查看编译日志](${runUrl})
             `;
             
             if (diagnostics) {
@@ -156,13 +187,12 @@ jobs:
               body += `\n### 📊 固件内存分配报告 (Memory Region)\n${codeBlock(memoryReport)}\n`;
             }
             
-            await github.rest.issues.createComment({
-              issue_number: parseInt(prNumber),
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+            await github.rest.issues.updateComment({
+              comment_id: Number(process.env.COMMENT_ID),
+              ...context.repo,
               body: body
             });
 
       - name: Fail workflow if compilation failed
-        if: ${{ always() && steps.build.outputs.status == 'failure' }}
+        if: ${{ always() && !cancelled() && steps.build.outputs.status == 'failure' }}
         run: exit 1
