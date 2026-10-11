@@ -54,7 +54,7 @@ function(include_sub_directories_recursively root_dir)
     if(IS_DIRECTORY ${root_dir})
         include_directories(${root_dir})
     endif()
-    file(GLOB children LIST_DIRECTORIES true ${root_dir}/*)
+    file(GLOB children LIST_DIRECTORIES true CONFIGURE_DEPENDS "${root_dir}/*")
     foreach(child ${children})
         if(IS_DIRECTORY ${child})
             include_sub_directories_recursively(${child})
@@ -63,14 +63,13 @@ function(include_sub_directories_recursively root_dir)
 endfunction()
 
 #递归添加用户源文件
-file(GLOB_RECURSE SOURCES
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS
     "APP/*.c"
     "APP/*.cpp"
     "BSP/*.c"
     "BSP/*.cpp"
     "MODULE/*.c"
     "MODULE/*.cpp"
-    "APP/*.cpp"
     "Algorithm/*.c"
     "Algorithm/*.cpp"
 )
