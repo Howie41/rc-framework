@@ -5,6 +5,7 @@
 #pragma once
 
 #include "asserter.hpp"
+#include "atomic_lock.hpp"
 #include "main.h"
 #include "memory_map.h"
 #include "rtos_stream_buffer.hpp"
@@ -62,20 +63,7 @@ protected:
     UART_HandleTypeDef& m_uart_handle;
     Callbacks m_callbacks;
 
-    std::atomic<bool> m_is_tx_busy{false};
-    bool try_acquire_tx() {
-        bool expected = false;
-
-        return m_is_tx_busy.compare_exchange_strong(
-            expected,
-            true,
-            std::memory_order_acquire,
-            std::memory_order_relaxed
-        );
-    }
-    void release_tx() {
-        m_is_tx_busy.store(false, std::memory_order_release);
-    }
+    AtomicLock m_tx_lock;
 
     virtual void handle_receive_to_idle_chunk(std::uint16_t size) {};
 
@@ -120,7 +108,7 @@ public:
     /** @brief 同步终止当前 IT 或 DMA 发送；耗时操作，不要在中断里调用 */
     HAL_StatusTypeDef abort_all_transmit() {
         const auto result = HAL_UART_AbortTransmit(&m_uart_handle);
-        if (result == HAL_OK) release_tx();
+        if (result == HAL_OK) m_tx_lock.release();
         return result;
     }
 };
@@ -154,7 +142,7 @@ public:
     HAL_StatusTypeDef start_transmit_it(std::span<const std::uint8_t> msg) {
         if (msg.size() > TxBufferSize) return HAL_ERROR;
 
-        if (!try_acquire_tx()) return HAL_BUSY;
+        if (!m_tx_lock.try_acquire()) return HAL_BUSY;
 
         std::ranges::copy(msg, m_tx_buffer.begin());
 
@@ -163,7 +151,7 @@ public:
             static_cast<const std::uint8_t*>(m_tx_buffer.data()),
             static_cast<std::uint16_t>(msg.size())
         );
-        if (result != HAL_OK) release_tx();
+        if (result != HAL_OK) m_tx_lock.release();
         return result;
     }
 };
@@ -224,7 +212,7 @@ public:
 
         if (msg.size() > TxBufferSize) return HAL_ERROR;
 
-        if (!try_acquire_tx()) return HAL_BUSY;
+        if (!m_tx_lock.try_acquire()) return HAL_BUSY;
 
         std::ranges::copy(msg, m_tx_buffer.begin());
 
@@ -233,7 +221,7 @@ public:
             static_cast<const std::uint8_t*>(m_tx_buffer.data()),
             static_cast<std::uint16_t>(msg.size())
         );
-        if (result != HAL_OK) release_tx();
+        if (result != HAL_OK) m_tx_lock.release();
         return result;
     }
 
@@ -384,7 +372,7 @@ public:
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
 
-        port->release_tx(); // 解除忙碌状态
+        port->m_tx_lock.release(); // 解除忙碌状态
 
         auto callback = port->m_callbacks.on_transmit_complete;
         if (callback == nullptr) return;
