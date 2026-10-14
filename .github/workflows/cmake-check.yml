@@ -55,7 +55,8 @@ jobs:
       - name: Install ARM GCC Toolchain
         uses: carlosperate/arm-none-eabi-gcc-action@v1
         with:
-          release: 'latest'
+          # 固定工具链版本，避免 latest 更新导致下载校验或编译行为变化。
+          release: '15.3.Rel1'
 
       - name: Configure, Build and Parse Logs
         id: build
