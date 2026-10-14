@@ -66,7 +66,7 @@ public:
         requires std::invocable<Func&, T&>
     void for_each(Func&& func) {
         for (auto* node = m_head_node; node != nullptr; node = node->m_next_node) {
-            func(node->m_value);
+            std::invoke(func, node->m_value);
         }
     }
 
@@ -75,7 +75,7 @@ public:
     void for_each(Func&& func) const {
         for (const StaticListNode<T>* node = m_head_node; node != nullptr;
              node = node->m_next_node) {
-            func(static_cast<const T&>(node->m_value));
+            std::invoke(func, static_cast<const T&>(node->m_value));
         }
     }
 };
