@@ -5,6 +5,7 @@
 #include "asserter.hpp"
 #include "stream_buffer.h"
 #include "rtos_utility.hpp"
+#include "static_list.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,7 +17,7 @@ class StreamBufferBase {
     friend class StreamBufferManager;
 
 private:
-    StreamBufferBase* m_next{nullptr};
+    StaticListNode<StreamBufferBase> m_node{*this};
 
 protected:
     StreamBufferBase() = default;
@@ -33,7 +34,7 @@ class StreamBufferManager {
     friend class StreamBuffer;
 
 private:
-    inline static StreamBufferBase* m_head{nullptr};
+    inline static StaticList<StreamBufferBase> m_buffers;
     inline static bool m_initialized{false};
     inline static size_t m_count{0};
 
@@ -45,9 +46,12 @@ private:
      * @attention 必须在管理器初始化之前调用
      */
     static void register_stream_buffer(StreamBufferBase* buffer) {
-        RUNTIME_ASSERT(!m_initialized);
-        buffer->m_next = m_head;
-        m_head = buffer;
+        RUNTIME_ASSERT(!m_initialized && buffer != nullptr);
+        if (m_initialized || buffer == nullptr) {
+            return;
+        }
+        const bool registered = m_buffers.push_front(&buffer->m_node);
+        RUNTIME_ASSERT(registered);
     }
 
 public:
@@ -60,11 +64,11 @@ public:
         }
 
         m_initialized = true;
-        for (StreamBufferBase* buffer = m_head; buffer != nullptr; buffer = buffer->m_next) {
-            if (buffer->init()) {
+        m_buffers.for_each([](StreamBufferBase& buffer) {
+            if (buffer.init()) {
                 ++m_count;
             }
-        }
+        });
     }
 
     /**
