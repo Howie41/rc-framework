@@ -5,6 +5,7 @@
 #include "asserter.hpp"
 #include "main.h"
 #include "rtos_utility.hpp"
+#include "static_list.hpp"
 #include "static_string.hpp"
 #include "task.h"
 
@@ -34,7 +35,7 @@ class TaskBase {
     friend class TaskManager;
 
 private:
-    TaskBase* m_next{nullptr};
+    StaticListNode<TaskBase> m_node{*this};
 
 protected:
     TaskBase() = default;
@@ -51,7 +52,7 @@ class TaskManager {
     friend class Task;
 
 private:
-    inline static TaskBase* m_head{nullptr};
+    inline static StaticList<TaskBase> m_tasks;
     inline static bool m_initialized{false};
     inline static size_t m_count{0};
 
@@ -63,9 +64,12 @@ private:
      * @attention 必须在管理器初始化之前调用
      */
     static void register_task(TaskBase* task) {
-        RUNTIME_ASSERT(!m_initialized);
-        task->m_next = m_head;
-        m_head = task;
+        RUNTIME_ASSERT(!m_initialized && task != nullptr);
+        if (m_initialized || task == nullptr) {
+            return;
+        }
+        const bool registered = m_tasks.push_front(&task->m_node);
+        RUNTIME_ASSERT(registered);
     }
 
 public:
@@ -76,11 +80,11 @@ public:
         }
 
         m_initialized = true;
-        for (TaskBase* task = m_head; task != nullptr; task = task->m_next) {
-            if (task->init()) {
+        m_tasks.for_each([](TaskBase& task) {
+            if (task.init()) {
                 ++m_count;
             }
-        }
+        });
     }
 
     /**
