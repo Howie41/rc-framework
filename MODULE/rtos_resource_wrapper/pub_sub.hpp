@@ -15,11 +15,6 @@ template <typename T> class Publisher;
 
 namespace detail {
 
-/**
- * @brief 同一消息类型的订阅者注册表，与各订阅者的队列容量无关
- * @attention 仅在启动阶段注册，开始发布前必须完成全部注册。
- *            注册后不支持注销，订阅者必须持续存活，不得销毁或移动。
- */
 template <typename T>
 class SubscriberBase {
     friend class Publisher<T>;
@@ -63,11 +58,10 @@ public:
 } // namespace detail
 
 /**
- * @brief 按 (T, topic_id) 订阅消息，每个实例持有独立的静态队列
- * @attention 推荐定义为全局或 static 对象，并在 QueueManager::init() 前构造。
- *            收发消息前必须完成 QueueManager::init()。
- *            ID 必须非空；仅保存 string_view，不复制字符串内容。
- *            字符串存储必须在订阅者使用期间有效且内容不变，推荐使用字符串字面量。
+ * @brief 接收指定类型和主题的消息。
+ * @tparam T 消息类型，须平凡可拷贝且可默认构造。
+ * @tparam QueueSize 接收队列容量，须大于 0。
+ * @attention 所有订阅者须在 QueueManager::init() 前构造，并在通信期间持续存活；收发前须完成初始化。
  */
 template <typename T, std::size_t QueueSize>
 class Subscriber final : public detail::SubscriberBase<T> {
@@ -79,24 +73,29 @@ private:
     }
 
 public:
+    /**
+     * @brief 创建订阅者。
+     * @param topic_id 非空主题名，字符串须在对象存活期间有效且内容不变。
+     */
     explicit Subscriber(std::string_view topic_id)
         : detail::SubscriberBase<T>(topic_id) {
         // 队列等成员全部构造完成后才将自身加入注册表。
         this->register_self();
     }
 
-    /** @brief 从本订阅者队列取出消息，超时或队列为空时返回 nullopt */
+    /**
+     * @brief 接收一条消息。
+     * @param timeout_ms 等待毫秒数；0 表示不等待，rtos::wait_forever 表示永久等待，中断中须为 0。
+     * @return 收到的消息；未收到时返回 std::nullopt。
+     */
     [[nodiscard]] std::optional<T> receive(std::uint32_t timeout_ms = 0) {
         return m_message_queue.get(timeout_ms);
     }
 };
 
 /**
- * @brief 无 Topic 实例的发布者，遍历同一 T 的订阅者并按 ID 投递
- * @note 同一 ID 使用不同 T 时互不通信，不做全局 ID 类型冲突检查。
- *       不缓存消息，没有订阅者时消息直接丢弃。
- * @attention ID 必须非空；仅保存 string_view，字符串存储必须在发布者使用期间
- *            有效且内容不变，推荐使用字符串字面量。
+ * @brief 向相同类型和主题的订阅者发布消息。
+ * @tparam T 消息类型。
  */
 template <typename T>
 class Publisher {
@@ -104,6 +103,10 @@ private:
     std::string_view m_topic_id;
 
 public:
+    /**
+     * @brief 创建发布者。
+     * @param topic_id 非空主题名，字符串须在对象存活期间有效且内容不变。
+     */
     explicit Publisher(std::string_view topic_id)
         : m_topic_id(topic_id) {
         RUNTIME_ASSERT(!topic_id.empty());
@@ -114,10 +117,10 @@ public:
     }
 
     /**
-     * @brief 非阻塞地向所有匹配订阅者投递；队列满时继续投递其他订阅者
-     * @return 成功入队的订阅者数量；无匹配或全部投递失败时为 0
-     * @note 耗时为 O(N)，N 为 T 对应的订阅者数量。可从任务或中断调用，
-     *       中断优先级须满足 FreeRTOS 的 FromISR API 要求。
+     * @brief 非阻塞发布消息，跳过已满的接收队列。
+     * @param message 要发布的消息。
+     * @return 成功投递的订阅者数量。
+     * @attention 可从任务或中断调用，中断优先级须满足 FreeRTOS 的 FromISR API 要求。
      */
     std::size_t publish(const T& message) const {
         std::size_t delivered{0};
