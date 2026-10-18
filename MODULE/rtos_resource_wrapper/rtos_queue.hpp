@@ -5,6 +5,7 @@
 #include "asserter.hpp"
 #include "queue.h"
 #include "rtos_utility.hpp"
+#include "static_list.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +18,7 @@ class QueueBase {
     friend class QueueManager;
 
 private:
-    QueueBase* m_next{nullptr};
+    StaticListNode<QueueBase> m_node{*this};
 
 protected:
     QueueBase() = default;
@@ -34,7 +35,7 @@ class QueueManager {
     friend class Queue;
 
 private:
-    inline static QueueBase* m_head{nullptr};
+    inline static StaticList<QueueBase> m_queues;
     inline static bool m_initialized{false};
     inline static size_t m_count{0};
 
@@ -46,9 +47,12 @@ private:
      * @attention 必须在管理器初始化之前调用
      */
     static void register_queue(QueueBase* queue) {
-        RUNTIME_ASSERT(!m_initialized);
-        queue->m_next = m_head;
-        m_head = queue;
+        RUNTIME_ASSERT(!m_initialized && queue != nullptr);
+        if (m_initialized || queue == nullptr) {
+            return;
+        }
+        const bool registered = m_queues.push_front(&queue->m_node);
+        RUNTIME_ASSERT(registered);
     }
 
 public:
@@ -59,11 +63,11 @@ public:
         }
 
         m_initialized = true;
-        for (QueueBase* queue = m_head; queue != nullptr; queue = queue->m_next) {
-            if (queue->init()) {
+        m_queues.for_each([](QueueBase& queue) {
+            if (queue.init()) {
                 ++m_count;
             }
-        }
+        });
     }
 
     /**

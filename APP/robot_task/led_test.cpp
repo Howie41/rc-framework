@@ -1,5 +1,6 @@
 #include "rtos_task.hpp"
 #include "uart_port.hpp"
+#include "static_list.hpp"
 
 rtos::Task<"led_test", [] {
     while (true) {
