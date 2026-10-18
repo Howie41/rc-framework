@@ -8,6 +8,7 @@
 | --- | --- |
 | `rtos_task.hpp` | `Task`：封装任务名称、入口、栈大小和优先级，并提供任务延时辅助函数 |
 | `rtos_queue.hpp` | `Queue`：传递固定类型的元素，支持入队、出队、查看队首和单元素覆盖 |
+| `pub_sub.hpp` | `Publisher` / `Subscriber`：按消息类型和主题发布、订阅消息，每个订阅者独立接收 |
 | `rtos_stream_buffer.hpp` | `StreamBuffer`：传递连续字节流，支持容量和接收唤醒阈值配置 |
 | `rtos_utility.hpp` | 提供时间查询、毫秒到 tick 的超时转换、中断上下文检测和永久等待常量 |
 | `rtos_resource_init.h/.cpp` | 提供可从 C 调用的统一资源初始化入口 `rtos_resource_init()` |
@@ -202,6 +203,72 @@ int result = front.value_or(-1);  // 有值时取值，否则使用默认值 -1
 
 空的 `optional` 不能使用 `*value` 或 `value->成员`，否则行为未定义。在启用异常的环境中，对空值调用 `value.value()` 会抛出 `std::bad_optional_access`；本项目工具链使用 `-fno-exceptions`，不能依靠捕获异常处理这种错误，应先判断是否有值，或用 `value_or(默认值)` 处理获取失败的情况。`if (value)` 判断的是是否有值，即使存储的整数是 `0`，条件也为真
 
+## Publisher / Subscriber：发布订阅
+
+发布者将消息投递给消息类型 `T` 和主题名 `topic_id` 均相同的所有订阅者。每个订阅者独立接收，队列容量可以不同；发布者和订阅者可以定义在不同的 `.cpp` 文件中。
+
+### 构造与参数
+
+```cpp
+template <typename T, std::size_t QueueSize>
+class Subscriber;
+
+template <typename T>
+class Publisher;
+```
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `T` | 消息类型；订阅消息须平凡可拷贝且可默认构造 |
+| `QueueSize` | 订阅者接收队列的容量，单位为消息条数，须大于 `0` |
+| 构造参数 `std::string_view topic_id` | 非空主题名；字符串须在对象存活期间有效且内容不变，推荐使用字符串字面量 |
+
+构造函数为 `explicit Subscriber(std::string_view topic_id)` 和 `explicit Publisher(std::string_view topic_id)`。
+
+所有订阅者须在 `rtos_resource_init()`（或单独调用的 `QueueManager::init()`）前构造，收发前须完成初始化。订阅者应定义为全局或 static 对象，在通信期间持续存活，不支持销毁后继续通信、复制或移动；不支持运行时新增订阅或退订。发布者无需单独初始化。
+
+### 方法
+
+| 方法签名 | 含义 |
+| --- | --- |
+| `std::size_t Publisher<T>::publish(const T& message) const` | 非阻塞发布 `message`，返回成功投递的订阅者数量；队列满时跳过该订阅者，继续投递其他订阅者 |
+| `std::optional<T> Subscriber<T, QueueSize>::receive(std::uint32_t timeout_ms = 0)` | 接收一条消息；`timeout_ms` 为等待毫秒数，`0` 表示不等待，`rtos::wait_forever` 表示永久等待；未收到时返回 `std::nullopt` |
+| `std::string_view topic_id() const` | 获取主题名，发布者和订阅者均提供此方法 |
+
+无匹配订阅者或全部接收队列已满时，`publish()` 返回 `0`，消息不会留待以后投递。同名主题使用不同消息类型时互不通信。
+
+### 使用示例
+
+```cpp
+#include "pub_sub.hpp"
+
+struct MotorCommand {
+    float speed;
+};
+
+// 全局声明，须在统一资源初始化前构造。
+rtos::Subscriber<MotorCommand, 4> motor_commands{"motor/command"};
+rtos::Subscriber<MotorCommand, 8> logged_commands{"motor/command"};
+rtos::Publisher<MotorCommand> command_publisher{"motor/command"};
+
+// 在资源初始化完成后的任务中调用。
+void send_command() {
+    const auto delivered = command_publisher.publish(MotorCommand{100.0F});
+    // delivered 表示本次成功投递的订阅者数量。
+    (void)delivered;
+}
+
+void receive_command() {
+    if (auto command = motor_commands.receive(10)) {
+        const float speed = command->speed;
+        // 使用 speed；logged_commands 中的消息由另一个接收者独立读取。
+        (void)speed;
+    }
+}
+```
+
+`publish()` 和 `receive()` 可从任务或中断调用；中断中 `receive()` 的超时须为 `0`，中断优先级要求见下文“超时与中断上下文”。
+
 ## StreamBuffer：字节流缓冲区
 
 ### 构造
@@ -262,8 +329,9 @@ size_t received = bytes.receive_to(output);
 
 ## 超时与中断上下文
 
-- 队列和流缓冲区的 `timeout_ms` 单位为毫秒，`0` 表示不等待，`rtos::wait_forever` 表示永久等待
+- 队列、订阅者和流缓冲区的 `timeout_ms` 单位为毫秒，`0` 表示不等待，`rtos::wait_forever` 表示永久等待
 - 收发接口自动选择任务或中断版本，中断上下文中 `timeout_ms` 必须为 `0`
+- 从中断调用收发接口（包括 `publish()` 和 `receive()`）时，中断优先级须满足 FreeRTOS 的 FromISR API 要求。本项目 Cortex-M 配置中，NVIC 抢占优先级数值须大于等于 `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`；当前该值为 `5`，最低优先级为 `15`，即允许 `5`～`15`，`0`～`4` 不可调用。数值越小，中断优先级越高；修改配置后应以 `Core/Inc/FreeRTOSConfig.h` 为准
 - 流缓冲区零超时收发使用临界区保护，复制的数据越多，对中断延迟的影响越大
 - 流缓冲区非零超时收发没有临界区保护，同一缓冲区应遵守单写者、单读者约束
 
