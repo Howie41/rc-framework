@@ -13,7 +13,7 @@ namespace rtos {
 
 template <typename T> class Publisher;
 
-namespace {
+namespace detail {
 
 /**
  * @brief 同一消息类型的订阅者注册表，与各订阅者的队列容量无关
@@ -60,7 +60,7 @@ public:
     }
 };
 
-}
+} // namespace detail
 
 /**
  * @brief 按 (T, topic_id) 订阅消息，每个实例持有独立的静态队列
@@ -70,7 +70,7 @@ public:
  *            字符串存储必须在订阅者使用期间有效且内容不变，推荐使用字符串字面量。
  */
 template <typename T, std::size_t QueueSize>
-class Subscriber final : public SubscriberBase<T> {
+class Subscriber final : public detail::SubscriberBase<T> {
 private:
     Queue<T, QueueSize> m_message_queue{};
 
@@ -80,7 +80,7 @@ private:
 
 public:
     explicit Subscriber(std::string_view topic_id)
-        : SubscriberBase<T>(topic_id) {
+        : detail::SubscriberBase<T>(topic_id) {
         // 队列等成员全部构造完成后才将自身加入注册表。
         this->register_self();
     }
@@ -125,7 +125,7 @@ public:
             return delivered;
         }
 
-        SubscriberBase<T>::m_subscribers.for_each([&](SubscriberBase<T>& subscriber) {
+        detail::SubscriberBase<T>::m_subscribers.for_each([&](detail::SubscriberBase<T>& subscriber) {
             if (subscriber.topic_id() != m_topic_id) {
                 return;
             }
