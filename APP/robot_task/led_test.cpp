@@ -2,6 +2,8 @@
 #include "uart_port.hpp"
 #include "static_list.hpp"
 
+#include "frame_codec.hpp"
+
 rtos::Task<"led_test", [] {
     while (true) {
         rtos::delay(100);
