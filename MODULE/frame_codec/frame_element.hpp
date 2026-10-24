@@ -17,8 +17,13 @@ enum class Error : std::uint8_t {
     HeaderMismatch,
     FooterMismatch,
     LengthMismatch,
+    BufferSizeMismatch,
+    CrcMismatch,
 };
 
+/// @brief 区域的类型标识，用于关联边界标记、长度字段和 CRC 字段。
+/// @tparam Id 区域标识值，不同区域使用不同的值。
+/// @details 例如 using Payload = RegionTag<0>;，随后使用 Begin<Payload>、End<Payload> 定义区域。
 template <std::size_t Id>
 struct RegionTag {
     static constexpr std::size_t id = Id;
@@ -37,8 +42,33 @@ inline constexpr bool is_region_tag = false;
 template <std::size_t Id>
 inline constexpr bool is_region_tag<RegionTag<Id>> = true;
 
+/// @brief 将数值的对象位表示按指定字节序写入字节切片。
+/// @tparam T 数值类型，要求可使用 std::bit_cast 转换为同宽字节数组。
+/// @tparam Order 输出字节序。
+template <typename T, std::endian Order>
+constexpr void serialize_value(T value, std::span<std::uint8_t, sizeof(T)> output) noexcept {
+    const auto bytes = std::bit_cast<std::array<std::uint8_t, sizeof(T)>>(value);
+    for (std::size_t i = 0; i < sizeof(T); ++i) {
+        output[i] = bytes[Order == std::endian::native ? i : sizeof(T) - 1 - i];
+    }
+}
+
+/// @brief 按指定字节序读取字节切片并还原数值，供字段和长度元素复用。
+/// @tparam T 返回的数值类型，要求可使用 std::bit_cast 从同宽字节数组转换。
+/// @tparam Order 输入字节序。序。
+template <typename T, std::endian Order>
+constexpr T deserialize_value(std::span<const std::uint8_t, sizeof(T)> input) noexcept {
+    std::array<std::uint8_t, sizeof(T)> bytes{};
+    for (std::size_t i = 0; i < sizeof(T); ++i) {
+        bytes[i] = input[Order == std::endian::native ? i : sizeof(T) - 1 - i];
+    }
+    return std::bit_cast<T>(bytes);
+}
+
 } // namespace detail
 
+/// @brief 标记区域起点，不占用帧字节，也不参与运行时编解码。
+/// @details 在 Frame 的元素列表中使用 Begin<Payload>，与同一 region tag 的 End<Payload> 配对。
 template <typename RegionTag>
 struct Begin {
     static_assert(detail::is_region_tag<RegionTag>, "Begin 要求使用 RegionTag 类型");
@@ -47,6 +77,8 @@ struct Begin {
     static constexpr std::size_t size() noexcept { return 0; }
 };
 
+/// @brief 标记区域终点，不占用帧字节，区域结束于此标记之前。
+/// @details 例如 Begin<Payload>, Field<float>, End<Payload> 定义一个四字节区域；区域可嵌套。
 template <typename RegionTag>
 struct End {
     static_assert(detail::is_region_tag<RegionTag>, "End 要求使用 RegionTag 类型");
@@ -55,23 +87,9 @@ struct End {
     static constexpr std::size_t size() noexcept { return 0; }
 };
 
-namespace detail {
-
-template <typename T>
-inline constexpr bool is_begin = false;
-
-template <typename RegionTag>
-inline constexpr bool is_begin<Begin<RegionTag>> = true;
-
-template <typename T>
-inline constexpr bool is_end = false;
-
-template <typename RegionTag>
-inline constexpr bool is_end<End<RegionTag>> = true;
-
-} // namespace detail
-
-// 区域内所有线路字节都计入长度，包括区域内的长度字段自身。
+/// @brief 指定长度字段表示哪个 region tag 对应区域的字节数，本身不作为帧元素使用。
+/// @details 作为 Length 的第二个模板参数，例如 Length<std::uint16_t, LengthOf<Payload>>。
+///          区域内所有线路字节均计入长度，包括区域内的长度字段自身。
 template <typename RegionTag>
 struct LengthOf {
     using region_tag = RegionTag;
@@ -79,23 +97,61 @@ struct LengthOf {
 };
 
 
-// 帧头和帧尾通过是否出现在 Frame 中表示可选，不使用空字节序列占位。
+/// @brief 固定帧头字节序列，序列化时写入，反序列化时逐字节验证。
+/// @details 例如 Header<0xAA, 0x55> 占用两个字节，通常置于 Frame 元素列表开头。
+///          至少指定一个字节；不需要帧头时直接省略该元素。
 template <std::uint8_t... Bytes>
 struct Header {
     static_assert(sizeof...(Bytes) > 0, "帧头必须至少包含一个字节");
 
     inline static constexpr std::array<std::uint8_t, sizeof...(Bytes)> bytes{Bytes...};
     static constexpr std::size_t size() noexcept { return bytes.size(); }
+
+    /// @brief 将固定帧头写入自身切片。
+    static constexpr void serialize(std::span<std::uint8_t, size()> output) noexcept {
+        for (std::size_t i = 0; i < size(); ++i) output[i] = bytes[i];
+    }
+
+    /// @brief 检查自身切片是否与固定帧头匹配。
+    [[nodiscard]]
+    static constexpr bool deserialize(std::span<const std::uint8_t, size()> input) noexcept {
+        for (std::size_t i = 0; i < size(); ++i) {
+            if (input[i] != bytes[i]) return false;
+        }
+        return true;
+    }
 };
 
+/// @brief 固定帧尾字节序列，序列化时写入，反序列化时逐字节验证。
+/// @details 例如 Footer<0x0D, 0x0A> 占用两个字节，通常置于 Frame 元素列表末尾。
+///          至少指定一个字节；不需要帧尾时直接省略该元素。
 template <std::uint8_t... Bytes>
 struct Footer {
     static_assert(sizeof...(Bytes) > 0, "帧尾必须至少包含一个字节");
 
     inline static constexpr std::array<std::uint8_t, sizeof...(Bytes)> bytes{Bytes...};
     static constexpr std::size_t size() noexcept { return bytes.size(); }
+
+    /// @brief 将固定帧尾写入自身切片。
+    static constexpr void serialize(std::span<std::uint8_t, size()> output) noexcept {
+        for (std::size_t i = 0; i < size(); ++i) output[i] = bytes[i];
+    }
+
+    /// @brief 检查自身切片是否与固定帧尾匹配。
+    [[nodiscard]]
+    static constexpr bool deserialize(std::span<const std::uint8_t, size()> input) noexcept {
+        for (std::size_t i = 0; i < size(); ++i) {
+            if (input[i] != bytes[i]) return false;
+        }
+        return true;
+    }
 };
 
+/// @brief 自动长度字段，写入或验证指定区域的字节数，不改变固定帧布局。
+/// @tparam T 保存长度的无符号整数类型。
+/// @tparam Meaning 长度含义，使用 LengthOf<RegionTag> 指定区域。
+/// @tparam Order 长度值的字节序，默认为小端。
+/// @details 例如 Length<std::uint16_t, LengthOf<Payload>>；调用编解码方法时传入区域长度。
 template <typename T, typename Meaning, std::endian Order = std::endian::little>
 struct Length {
     static_assert(std::is_unsigned_v<T> && !std::is_same_v<T, bool> &&
@@ -107,9 +163,26 @@ struct Length {
     using region_tag = typename Meaning::region_tag;
     static constexpr std::endian byte_order = Order;
     static constexpr std::size_t size() noexcept { return sizeof(T); }
+
+    /// @brief 将 Layout 已验证可表示的区域长度写入自身切片。
+    static constexpr void serialize(std::span<std::uint8_t, size()> output,
+                                    std::size_t region_size) noexcept {
+        detail::serialize_value<T, Order>(static_cast<T>(region_size), output);
+    }
+
+    /// @brief 检查自身切片中的长度是否等于预期区域长度。
+    [[nodiscard]]
+    static constexpr bool deserialize(std::span<const std::uint8_t, size()> input,
+                                      std::size_t region_size) noexcept {
+        return detail::deserialize_value<T, Order>(input) == region_size;
+    }
 };
 
-// 首版只描述固定宽度整数与 IEEE 754 binary32，不使用结构体内存布局。
+/// @brief 普通数值字段，在数值与自身字节切片之间转换，不保存运行时数值。
+/// @tparam T 1/2/4/8 字节整数（不含 bool）或 IEEE 754 binary32 的 float。
+/// @tparam Order 字段字节序，默认为小端。
+/// @details 例如 Field<std::uint16_t, std::endian::big> 定义一个两字节大端字段。
+///          使用 serialize(value, output) 写入数值，deserialize(input) 返回解析值。
 template <typename T, std::endian Order = std::endian::little>
 struct Field {
     static_assert((std::is_integral_v<T> && !std::is_same_v<T, bool> &&
@@ -124,8 +197,63 @@ struct Field {
     using value_type = T;
     static constexpr std::endian byte_order = Order;
     static constexpr std::size_t size() noexcept { return sizeof(T); }
+
+    /// @brief 按指定字节序将数值写入自身切片。
+    static constexpr void serialize(value_type value,
+                                    std::span<std::uint8_t, size()> output) noexcept {
+        detail::serialize_value<T, Order>(value, output);
+    }
+
+    /// @brief 按指定字节序从自身切片读取数值。
+    [[nodiscard]]
+    static constexpr value_type deserialize(std::span<const std::uint8_t, size()> input) noexcept {
+        return detail::deserialize_value<T, Order>(input);
+    }
 };
 
+namespace detail {
+
+/// @brief 计算 CRC8：多项式 0x07，初值 0x00，不反射，最终异或值 0x00。
+/// @param input 参与校验的字节区域，允许为空。
+/// @return 区域的 CRC8，空区域返回 0x00。
+[[nodiscard]]
+constexpr std::uint8_t calculate_crc8(std::span<const std::uint8_t> input) noexcept {
+    std::uint8_t crc = 0x00;
+    for (const auto byte : input) {
+        crc ^= byte;
+        for (std::size_t bit = 0; bit < 8; ++bit) {
+            crc = static_cast<std::uint8_t>((crc & 0x80) != 0
+                                               ? (crc << 1) ^ 0x07
+                                               : crc << 1);
+        }
+    }
+    return crc;
+}
+
+/// @brief 计算 CRC16：多项式 0x1021，初值 0xFFFF，不反射，最终异或值 0x0000。
+/// @param input 参与校验的字节区域，允许为空。
+/// @return 区域的 CRC16，空区域返回 0xFFFF。
+[[nodiscard]]
+constexpr std::uint16_t calculate_crc16(std::span<const std::uint8_t> input) noexcept {
+    std::uint16_t crc = 0xFFFF;
+    for (const auto byte : input) {
+        crc ^= static_cast<std::uint16_t>(static_cast<std::uint16_t>(byte) << 8);
+        for (std::size_t bit = 0; bit < 8; ++bit) {
+            crc = static_cast<std::uint16_t>((crc & 0x8000) != 0
+                                                ? (crc << 1) ^ 0x1021
+                                                : crc << 1);
+        }
+    }
+    return crc;
+}
+
+} // namespace detail
+
+/// @brief 自动 CRC 字段，计算指定区域的校验值并写入，或验证已保存的校验值。
+/// @tparam RegionTag 校验区域的 region tag，由对应 Begin、End 标记定义。
+/// @tparam Type CRC 算法，默认为 Crc16；字段宽度随算法为一或两字节。
+/// @tparam Order 校验值写入帧时的字节序，默认为小端，不影响 CRC 计算算法。
+/// @details 例如 Crc<Payload, CrcType::Crc16, std::endian::big>；编解码时传入自身切片和校验区域。
 template <typename RegionTag, CrcType Type = CrcType::Crc16,
           std::endian Order = std::endian::little>
 struct Crc {
@@ -136,6 +264,31 @@ struct Crc {
     static constexpr CrcType type = Type;
     static constexpr std::endian byte_order = Order;
     static constexpr std::size_t size() noexcept { return sizeof(value_type); }
+
+    /// @brief 计算区域 CRC，并按指定字节序写入自身切片。
+    /// @param output CRC 字段自身的可写切片。
+    /// @param region Layout 已验证覆盖范围的只读校验区域。
+    static constexpr void serialize(std::span<std::uint8_t, size()> output,
+                                    std::span<const std::uint8_t> region) noexcept {
+        detail::serialize_value<value_type, Order>(calculate(region), output);
+    }
+
+    /// @brief 读取自身切片中的 CRC，与重新计算的区域 CRC 比较。
+    /// @return 保存值与计算值相等时返回 true。
+    [[nodiscard]]
+    static constexpr bool deserialize(std::span<const std::uint8_t, size()> input,
+                                      std::span<const std::uint8_t> region) noexcept {
+        return detail::deserialize_value<value_type, Order>(input) == calculate(region);
+    }
+
+private:
+    static constexpr value_type calculate(std::span<const std::uint8_t> region) noexcept {
+        if constexpr (Type == CrcType::Crc8) {
+            return detail::calculate_crc8(region);
+        } else {
+            return detail::calculate_crc16(region);
+        }
+    }
 };
 
 } // namespace frame
