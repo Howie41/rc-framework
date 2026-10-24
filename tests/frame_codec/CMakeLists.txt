@@ -1,0 +1,40 @@
+cmake_minimum_required(VERSION 3.22)
+project(frame_codec_tests LANGUAGES CXX)
+
+enable_testing()
+add_executable(region_pairs_test region_pairs_test.cpp)
+target_compile_features(region_pairs_test PRIVATE cxx_std_20)
+set_target_properties(region_pairs_test PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(region_pairs_test PRIVATE ../../MODULE/frame_codec)
+add_test(NAME region_pairs COMMAND region_pairs_test)
+
+foreach(case RANGE 1 8)
+    set(target region_pairs_invalid_${case})
+    add_executable(${target} EXCLUDE_FROM_ALL region_pairs_test.cpp)
+    target_compile_features(${target} PRIVATE cxx_std_20)
+    set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
+    target_include_directories(${target} PRIVATE ../../MODULE/frame_codec)
+    target_compile_definitions(${target} PRIVATE REGION_PAIRS_INVALID_CASE=${case})
+    add_test(NAME ${target}
+             COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${target} --config $<CONFIG>)
+    set_tests_properties(${target} PROPERTIES WILL_FAIL TRUE RUN_SERIAL TRUE)
+endforeach()
+
+add_executable(frame_format_test frame_format_test.cpp)
+target_compile_features(frame_format_test PRIVATE cxx_std_20)
+set_target_properties(frame_format_test PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(frame_format_test PRIVATE ../../MODULE/frame_codec)
+add_test(NAME frame_format COMMAND frame_format_test)
+
+# 每个目标都应在编译期失败，不加入默认构建。
+foreach(case RANGE 1 5)
+    set(target frame_format_invalid_${case})
+    add_executable(${target} EXCLUDE_FROM_ALL frame_format_test.cpp)
+    target_compile_features(${target} PRIVATE cxx_std_20)
+    set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
+    target_include_directories(${target} PRIVATE ../../MODULE/frame_codec)
+    target_compile_definitions(${target} PRIVATE FRAME_FORMAT_INVALID_CASE=${case})
+    add_test(NAME ${target}
+             COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${target} --config $<CONFIG>)
+    set_tests_properties(${target} PROPERTIES WILL_FAIL TRUE RUN_SERIAL TRUE)
+endforeach()
