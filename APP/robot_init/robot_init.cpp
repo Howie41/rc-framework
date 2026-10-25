@@ -3,5 +3,6 @@
 #include "bsp_dwt.hpp"
 
 void robot_init() {
-	Dwt::instance().init(HAL_RCC_GetHCLKFreq() / 100'0000U);
+    // CYCCNT 使用 CPU 内核时钟，不能使用二分频后的 HCLK。
+    Dwt::instance().init(SystemCoreClock / 1'000'000U);
 }
