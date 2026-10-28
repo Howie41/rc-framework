@@ -26,6 +26,12 @@ public:
     static void init() {
         if (initialized) return;
 
+        // TODO(ETH): 在链接脚本中将 .RxDescripSection / .TxDescripSection 收入 RAM_D2，
+        // 分别按 32 字节对齐并纳入启动清零范围；核对 map，避免与 UART DMA 缓冲重叠。
+        // 接入收发时还需检查数据缓冲位置，启用 D-cache 时补齐 MPU 属性或缓存维护。
+        // TODO(ETH): 按硬件确认 ETH_RST 极性、复位时序及参考时钟，在 MX_ETH_Init() 前释放复位。
+        // MX_ETH_Init() 当前在 main() 中先于本函数执行，复位处理需前移；暂不使用 ETH 时暂缓初始化。
+
         // CYCCNT 使用 CPU 内核时钟，不能使用二分频后的 HCLK。
         Dwt::instance().init(SystemCoreClock / 1'000'000U);
 
