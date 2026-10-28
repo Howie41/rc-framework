@@ -8,22 +8,14 @@ PidManager &PidManager::instance() {
 }
 
 bool PidManager::register_pid(PidController *pid) {
-    if (pid == nullptr || pid->id_ != INVALID_PID_ID || size_ >= MAX_PID_COUNT) {
+    if (pid == nullptr || pid->m_id != INVALID_PID_ID || m_size >= MAX_PID_COUNT) {
         return false;
     }
 
-    pid->id_ = static_cast<uint8_t>(size_);
-    pid->next_ = nullptr;
+    if (!m_pids.push_front(&pid->m_node)) return false;
 
-    if (tail_ == nullptr) {
-        head_ = pid;
-        tail_ = pid;
-    } else {
-        tail_->next_ = pid;
-        tail_ = pid;
-    }
-
-    ++size_;
+    pid->m_id = static_cast<uint8_t>(m_size);
+    ++m_size;
     return true;
 }
 
@@ -32,12 +24,11 @@ PidController *PidManager::get_pid(uint8_t pid_id) {
         return nullptr;
     }
 
-    for (PidController *pid = head_; pid != nullptr; pid = pid->next_) {
-        if (pid->id_ == pid_id) {
-            return pid;
-        }
-    }
-    return nullptr;
+    PidController *result = nullptr;
+    m_pids.for_each([&](PidController &pid) {
+        if (pid.m_id == pid_id) result = &pid;
+    });
+    return result;
 }
 
 const PidController *PidManager::get_pid(uint8_t pid_id) const {
@@ -45,12 +36,11 @@ const PidController *PidManager::get_pid(uint8_t pid_id) const {
         return nullptr;
     }
 
-    for (const PidController *pid = head_; pid != nullptr; pid = pid->next_) {
-        if (pid->id_ == pid_id) {
-            return pid;
-        }
-    }
-    return nullptr;
+    const PidController *result = nullptr;
+    m_pids.for_each([&](const PidController &pid) {
+        if (pid.m_id == pid_id) result = &pid;
+    });
+    return result;
 }
 
-std::size_t PidManager::size() const { return size_; }
+std::size_t PidManager::size() const { return m_size; }

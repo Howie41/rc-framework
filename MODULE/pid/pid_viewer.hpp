@@ -13,7 +13,6 @@
 #include <limits>
 #include <span>
 #include <tuple>
-#include <utility>
 
 namespace pid_viewer_detail {
 
@@ -21,12 +20,13 @@ using CheckedRegion = frame::RegionTag<0>;
 using Byte = frame::Field<uint8_t>;
 using Float = frame::Field<float>;
 
-// CRC16/CCITT-FALSE 覆盖编码后的类型及载荷，不包含 kStartOfFrame。
+// CRC16/CCITT-FALSE 覆盖编码后的类型及载荷，不包含帧头。
 template <uint8_t Type, typename... Payload>
 using Packet = frame::Frame<
     frame::Header<0xA5>, frame::Begin<CheckedRegion>,
     frame::Header<static_cast<uint8_t>(Type ^ 0x5A)>, Payload...,
-    frame::End<CheckedRegion>, frame::Crc<CheckedRegion>>;
+    frame::End<CheckedRegion>, frame::Crc<CheckedRegion>
+>;
 
 using ReadPid = Packet<0x01, Byte>;
 using SelectChannels = Packet<0x02, Byte, Byte, Byte, Byte>;
@@ -37,18 +37,9 @@ using Monitor = Packet<0x84, frame::Field<uint32_t>,
     Byte, Float, Float, Byte, Float, Float,
     Byte, Float, Float, Byte, Float, Float>;
 
-// 名称按 32 个原始字节传输，展开成 codec 支持的标量字段。
-template <std::size_t... Indices>
-auto pid_info_format(std::index_sequence<Indices...>) -> Packet<
-    0x81, Byte, Byte, decltype((void)Indices, Byte{})...,
+using PidName = std::array<char, PidController::kNameSize>;
+using PidInfo = Packet<0x81, Byte, Byte, frame::Field<PidName>,
     Float, Float, Float, frame::Header<0, 0>>;
-
-using PidInfo = decltype(pid_info_format(std::make_index_sequence<PidController::NAME_SIZE>{}));
-
-template <std::size_t... Indices>
-auto name_values(const char *name, std::index_sequence<Indices...>) {
-    return std::tuple{static_cast<uint8_t>(name == nullptr ? 0 : name[Indices])...};
-}
 
 static_assert(ReadPid::size() == 5 && SelectChannels::size() == 8 && SetPid::size() == 17);
 static_assert(PidInfo::size() == 52 && Ack::size() == 21 && Monitor::size() == 44);
@@ -58,36 +49,40 @@ static_assert(PidInfo::size() == 52 && Ack::size() == 21 && Monitor::size() == 4
 /**
  * @brief PID Viewer 协议处理器。
  *
- * bind() 绑定启用接收流缓冲区的 DMA 串口，tick() 在任务中处理收发和监控。
- * 串口须比 Viewer 活得更久；bind、tick 及其余协议接口应在同一任务调用。
+ * bind() 绑定启用接收流缓冲区的 DMA 串口，update() 在任务中处理收发和监控。
+ * 串口须比 Viewer 活得更久；公开接口应在同一任务调用。
  * 串口 DMA 的初始化与启动由调用方负责。
  */
 class PidViewer {
 public:
-    using TransmitCallback = void (*)(const uint8_t *data, std::size_t length);
-
+    /**
+     * @brief 上位机设置比例、积分和微分参数时使用的允许范围，包含上下界。
+     * @note 各上下界须为有限数值，且下界不大于上界；默认允许所有有限 float 值。
+     */
     struct ParameterLimits {
-        float m_kp_min{std::numeric_limits<float>::lowest()};
-        float m_kp_max{std::numeric_limits<float>::max()};
-        float m_ki_min{std::numeric_limits<float>::lowest()};
-        float m_ki_max{std::numeric_limits<float>::max()};
-        float m_kd_min{std::numeric_limits<float>::lowest()};
-        float m_kd_max{std::numeric_limits<float>::max()};
+        float kp_min{std::numeric_limits<float>::lowest()}; ///< 比例系数最小值。
+        float kp_max{std::numeric_limits<float>::max()};    ///< 比例系数最大值。
+        float ki_min{std::numeric_limits<float>::lowest()}; ///< 积分系数最小值。
+        float ki_max{std::numeric_limits<float>::max()};    ///< 积分系数最大值。
+        float kd_min{std::numeric_limits<float>::lowest()}; ///< 微分系数最小值。
+        float kd_max{std::numeric_limits<float>::max()};    ///< 微分系数最大值。
     };
 
+    /** @brief 禁止复制单例协议处理器。 */
     PidViewer(const PidViewer &) = delete;
+    /** @brief 禁止对单例协议处理器进行拷贝赋值。 */
     PidViewer &operator=(const PidViewer &) = delete;
-
-    static PidViewer &instance() {
-        static PidViewer viewer;
-        return viewer;
-    }
 
     /**
      * @brief 绑定 DMA 串口，接管 Viewer 收发；不启动或中止串口 DMA。
+     * @tparam UniqueId 串口缓冲区的编译期唯一标识。
+     * @tparam TransmitBufferSize DMA 发送缓冲区容量，至少为 52 字节。
+     * @tparam ReceiveBufferSize DMA 接收缓冲区容量，须大于零。
+     * @tparam ReceiveStreamBufferSize 接收流缓冲区容量，须大于零。
+     * @param port 待绑定的串口实例，须在绑定期间持续有效。
      * @note 接收流缓冲区由 Viewer 独占读取，发送接口也应由 Viewer 独占。
-     *       TX 缓冲区至少 52 字节，RX 缓冲区和 RX 流缓冲区均须启用。
      *       重新绑定会清空待发帧、半帧和监控通道。
+     *       不清空串口接收流缓冲区，也不取消已提交给 DMA 的发送。
      */
     template <StaticString UniqueId, uint16_t TransmitBufferSize,
               uint16_t ReceiveBufferSize, uint16_t ReceiveStreamBufferSize>
@@ -117,78 +112,28 @@ public:
      * @brief 在任务中周期调用，非阻塞处理接收、MONITOR 调度和待发帧。
      * @param timestamp_ms 单调递增的毫秒时间戳，允许 uint32_t 回绕。
      * @note 建议每 1 ms 调用；每次最多读取 256 字节，MONITOR 周期为 10 ms。
+     *       发送队列满时暂停读取串口；DMA 发送忙时保留待发帧，其他发送错误丢弃该帧。
+     *       未调用 bind() 时直接返回。
      */
-    static void tick(uint32_t timestamp_ms) {
+    static void update(uint32_t timestamp_ms) {
         auto &viewer = instance();
+        if (viewer.m_uart_port == nullptr) return;
         viewer.flush_transmit();
-        if (viewer.m_uart_port != nullptr) {
-            // 一次读取一个字节，队列满时停止消费，避免丢失命令的应答。
-            for (std::size_t i = 0; i < 256 && viewer.m_transmit_count < kTransmitQueueSize; ++i) {
-                uint8_t byte;
-                if (viewer.m_uart_receive(viewer.m_uart_port, std::span{&byte, 1U}) == 0) break;
-                viewer.process_byte(byte);
-            }
+        // 一次读取一个字节，队列满时停止消费，避免丢失命令的应答。
+        for (std::size_t i = 0; i < 256 && viewer.m_transmit_count < kTransmitQueueSize; ++i) {
+            uint8_t byte;
+            if (viewer.m_uart_receive(viewer.m_uart_port, std::span{&byte, 1U}) == 0) break;
+            viewer.process_byte(byte);
         }
-        if (viewer.m_transmit_count < kTransmitQueueSize) viewer.process_poll(timestamp_ms);
+        if (viewer.m_transmit_count < kTransmitQueueSize) viewer.update_monitor(timestamp_ms);
         viewer.flush_transmit();
     }
 
-    /** @brief 使用 HAL 毫秒时间戳执行 tick。 */
-    static void tick() { tick(HAL_GetTick()); }
-
     /**
-     * @brief 输入串口接收到的字节流。
-     * @param data 接收缓冲区。
-     * @param length 缓冲区长度，可以包含半帧或多帧。
-     */
-    static void receive(const uint8_t *data, std::size_t length) {
-        if (data == nullptr || length == 0U) {
-            return;
-        }
-        instance().process_receive(data, length);
-    }
-
-    /**
-     * @brief PID Viewer 统一发送出口。
-     *
-     * 绑定串口时写入待发队列，由 tick() 提交 DMA；未绑定时使用发送回调。
-     * 队列满时丢弃新帧；tick() 会在队列满时停止读取串口。
-     */
-    static void transmit(const uint8_t *data, std::size_t length) {
-        PidViewer &viewer = instance();
-        if (data == nullptr || length == 0U) return;
-        if (viewer.m_uart_port != nullptr) {
-            if (length > kMaxFrameSize || viewer.m_transmit_count == kTransmitQueueSize) return;
-            const auto tail = (viewer.m_transmit_head + viewer.m_transmit_count) % kTransmitQueueSize;
-            auto &pending = viewer.m_transmit_queue[tail];
-            std::copy_n(data, length, pending.m_bytes.begin());
-            pending.m_length = length;
-            ++viewer.m_transmit_count;
-        } else if (viewer.m_transmit_callback != nullptr) {
-            viewer.m_transmit_callback(data, length);
-        }
-    }
-
-    /**
-     * @brief 设置实际发送接口。
-     * @param callback 未绑定串口时使用的发送回调；传入 nullptr 可禁用回调。
-     */
-    static void set_transmit_callback(TransmitCallback callback) {
-        instance().m_transmit_callback = callback;
-    }
-
-    /** @brief 通知接收帧超时并清空当前解析状态。 */
-    static void receive_timeout() { instance().reset_receive(); }
-
-    /**
-     * @brief 兼容旧接口，等价于 tick(timestamp_ms)。
-     * @param timestamp_ms 当前毫秒时间戳。
-     */
-    static void poll(uint32_t timestamp_ms) { tick(timestamp_ms); }
-
-    /**
-     * @brief 设置 kSetPid 参数范围。
-     * @return 范围有效并设置成功时返回 true。
+     * @brief 设置上位机调参指令允许的 PID 参数范围。
+     * @param limits 比例、积分和微分系数的允许上下界。
+     * @return 所有上下界均为有限数值且下界不大于上界时返回 true，否则返回 false。
+     * @note 失败时保留原范围；成功时只影响后续调参校验，不修改已有 PID 参数。
      */
     static bool set_parameter_limits(const ParameterLimits &limits) {
         return instance().set_limits(limits);
@@ -204,8 +149,8 @@ private:
     static constexpr std::size_t kTransmitQueueSize = 8U;
 
     struct PendingFrame {
-        std::array<uint8_t, kMaxFrameSize> m_bytes{};
-        std::size_t m_length{0};
+        std::array<uint8_t, kMaxFrameSize> bytes{};
+        std::size_t length{0};
     };
 
     enum FrameType : uint8_t {
@@ -228,10 +173,28 @@ private:
 
     PidViewer() = default;
 
+    /**
+     * @brief 获取 PID Viewer 单例，首次调用时创建。
+     * @return 整个程序共用的协议处理器引用。
+     */
+    static PidViewer &instance() {
+        static PidViewer viewer;
+        return viewer;
+    }
+
+    void enqueue_transmit(std::span<const uint8_t> bytes) {
+        if (bytes.size() > kMaxFrameSize || m_transmit_count == kTransmitQueueSize) return;
+        const auto tail = (m_transmit_head + m_transmit_count) % kTransmitQueueSize;
+        auto &pending = m_transmit_queue[tail];
+        std::copy(bytes.begin(), bytes.end(), pending.bytes.begin());
+        pending.length = bytes.size();
+        ++m_transmit_count;
+    }
+
     void flush_transmit() {
-        if (m_uart_port == nullptr || m_transmit_count == 0) return;
+        if (m_transmit_count == 0) return;
         const auto &pending = m_transmit_queue[m_transmit_head];
-        const auto result = m_uart_transmit(m_uart_port, {pending.m_bytes.data(), pending.m_length});
+        const auto result = m_uart_transmit(m_uart_port, {pending.bytes.data(), pending.length});
         if (result == HAL_BUSY) return;
         // DMA 接口已复制到串口自有缓冲区；错误帧丢弃，避免堵住后续发送。
         m_transmit_head = (m_transmit_head + 1) % kTransmitQueueSize;
@@ -253,12 +216,6 @@ private:
 
     static bool time_reached(uint32_t now, uint32_t target) {
         return static_cast<int32_t>(now - target) >= 0;
-    }
-
-    void process_receive(const uint8_t *data, std::size_t length) {
-        for (std::size_t i = 0U; i < length; ++i) {
-            process_byte(data[i]);
-        }
     }
 
     void process_byte(uint8_t byte) {
@@ -367,12 +324,14 @@ private:
             return;
         }
 
-        if (!valid_parameter(kp, m_parameter_limits.m_kp_min, m_parameter_limits.m_kp_max) ||
-            !valid_parameter(ki, m_parameter_limits.m_ki_min, m_parameter_limits.m_ki_max) ||
-            !valid_parameter(kd, m_parameter_limits.m_kd_min, m_parameter_limits.m_kd_max)) {
+        if (!valid_parameter(kp, m_parameter_limits.kp_min, m_parameter_limits.kp_max) ||
+            !valid_parameter(ki, m_parameter_limits.ki_min, m_parameter_limits.ki_max) ||
+            !valid_parameter(kd, m_parameter_limits.kd_min, m_parameter_limits.kd_max)) {
             const PidController::Config &config = pid->config();
             send_ack(kSetPid, kAckInvalidParameter, pid_id,
-                     config.kp, config.ki, config.kd);
+                     config.kp.load(std::memory_order_relaxed),
+                     config.ki.load(std::memory_order_relaxed),
+                     config.kd.load(std::memory_order_relaxed));
             return;
         }
 
@@ -385,9 +344,9 @@ private:
     }
 
     bool set_limits(const ParameterLimits &limits) {
-        if (!valid_limit_pair(limits.m_kp_min, limits.m_kp_max) ||
-            !valid_limit_pair(limits.m_ki_min, limits.m_ki_max) ||
-            !valid_limit_pair(limits.m_kd_min, limits.m_kd_max)) {
+        if (!valid_limit_pair(limits.kp_min, limits.kp_max) ||
+            !valid_limit_pair(limits.ki_min, limits.ki_max) ||
+            !valid_limit_pair(limits.kd_min, limits.kd_max)) {
             return false;
         }
         m_parameter_limits = limits;
@@ -399,24 +358,31 @@ private:
     }
 
     void send_pid_info(uint8_t pid_id, const PidController *pid) {
-        const auto gains = pid == nullptr ? std::tuple{0.0f, 0.0f, 0.0f}
-                                         : std::tuple{pid->config().kp, pid->config().ki, pid->config().kd};
-        const auto bytes = pid_viewer_detail::PidInfo::serialize(std::tuple_cat(
-            std::tuple{static_cast<uint8_t>(pid == nullptr ? kPidInfoNotFound : kPidInfoOk), pid_id},
-            pid_viewer_detail::name_values(pid == nullptr ? nullptr : pid->name(),
-                                          std::make_index_sequence<PidController::NAME_SIZE>{}),
-            gains));
-        transmit(bytes.data(), bytes.size());
+        pid_viewer_detail::PidName name{};
+        float kp = 0.0f;
+        float ki = 0.0f;
+        float kd = 0.0f;
+        if (pid != nullptr) {
+            std::copy_n(pid->name(), name.size(), name.begin());
+            const auto &config = pid->config();
+            kp = config.kp.load(std::memory_order_relaxed);
+            ki = config.ki.load(std::memory_order_relaxed);
+            kd = config.kd.load(std::memory_order_relaxed);
+        }
+        const auto bytes = pid_viewer_detail::PidInfo::serialize(std::tuple{
+            static_cast<uint8_t>(pid == nullptr ? kPidInfoNotFound : kPidInfoOk),
+            pid_id, name, kp, ki, kd});
+        enqueue_transmit(bytes);
     }
 
     void send_ack(uint8_t command_type, AckStatus status, uint8_t pid_id,
                   float kp, float ki, float kd) {
         const auto bytes = pid_viewer_detail::Ack::serialize(
             std::tuple{command_type, static_cast<uint8_t>(status), pid_id, kp, ki, kd});
-        transmit(bytes.data(), bytes.size());
+        enqueue_transmit(bytes);
     }
 
-    void process_poll(uint32_t timestamp_ms) {
+    void update_monitor(uint32_t timestamp_ms) {
         if (!m_monitor_enabled) {
             return;
         }
@@ -439,7 +405,7 @@ private:
 
         const auto bytes = pid_viewer_detail::Monitor::serialize(std::tuple_cat(
             std::tuple{timestamp_ms}, values[0], values[1], values[2], values[3]));
-        transmit(bytes.data(), bytes.size());
+        enqueue_transmit(bytes);
     }
 
     void reset_receive() {
@@ -453,7 +419,6 @@ private:
     std::array<uint8_t, kChannelCount> m_channels{
         kUnusedPidId, kUnusedPidId, kUnusedPidId, kUnusedPidId};
     ParameterLimits m_parameter_limits{};
-    TransmitCallback m_transmit_callback{nullptr};
     UartPort *m_uart_port{nullptr};
     std::size_t (*m_uart_receive)(UartPort *, std::span<uint8_t>){nullptr};
     HAL_StatusTypeDef (*m_uart_transmit)(UartPort *, std::span<const uint8_t>){nullptr};

@@ -28,7 +28,7 @@ rtos::Task<"pid_viewer", [] {
 
     TickType_t next_wake_tick = rtos::now_tick();
     while (true) {
-        PidViewer::tick();
+        PidViewer::update(rtos::now_tick());
         next_wake_tick += kUpdatePeriodTicks;
         rtos::delay_until(next_wake_tick);
     }
