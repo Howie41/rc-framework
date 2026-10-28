@@ -11,22 +11,17 @@ struct AssertionInfo {
 };
 
 class Asserter final {
-private:
-    inline static AssertionInfo m_source{};
-
 public:
     Asserter() = delete;
 
-    [[nodiscard]] static const AssertionInfo& source() noexcept {
-        return m_source;
-    }
-
+    inline static AssertionInfo source{};
+    
     static void fail(
         const char* expression,
         const char* file,
         std::uint32_t line
     ) noexcept {
-        m_source = {
+        source = {
             .expression = expression,
             .file = file,
             .line = line,

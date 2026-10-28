@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <limits>
 #include <type_traits>
 
 namespace rtos {
@@ -182,13 +183,13 @@ inline void delay(uint32_t ticks) {
 /**
  * @brief 将当前任务阻塞到指定的绝对系统节拍
  * @param ticks 目标系统节拍
- * @attention 不考虑 ticks 溢出
+ * @note 目标已到达或过期时直接返回；未来目标距离须小于半个节拍计数周期。
  */
 inline void delay_until(uint32_t ticks) {
     TickType_t current_ticks = xTaskGetTickCount();
     const TickType_t delay_ticks = static_cast<TickType_t>(ticks) - current_ticks;
 
-    if (delay_ticks != 0U) {
+    if (delay_ticks != 0U && delay_ticks <= std::numeric_limits<TickType_t>::max() / 2U) {
         vTaskDelayUntil(&current_ticks, delay_ticks);
     }
 }

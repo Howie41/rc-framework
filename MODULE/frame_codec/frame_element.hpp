@@ -178,9 +178,10 @@ struct Length {
     }
 };
 
-/// @brief 普通数值字段，在数值与自身字节切片之间转换，不保存运行时数值。
-/// @tparam T 1/2/4/8 字节整数（不含 bool）或 IEEE 754 binary32 的 float。
-/// @tparam Order 字段字节序，默认为小端。
+/// @brief 普通字段，在数值或固定长度字节数组与自身切片之间转换，不保存运行时数据。
+/// @tparam T 1/2/4/8 字节整数（不含 bool）、IEEE 754 binary32 的 float，
+///           或元素为 uint8_t、char、std::byte 的 std::array。
+/// @tparam Order 数值字段字节序，默认为小端；字节数组始终保持元素顺序。
 /// @details 例如 Field<std::uint16_t, std::endian::big> 定义一个两字节大端字段。
 ///          使用 serialize(value, output) 写入数值，deserialize(input) 返回解析值。
 template <typename T, std::endian Order = std::endian::little>
@@ -208,6 +209,43 @@ struct Field {
     [[nodiscard]]
     static constexpr value_type deserialize(std::span<const std::uint8_t, size()> input) noexcept {
         return detail::deserialize_value<T, Order>(input);
+    }
+};
+
+/// @brief 固定长度字节数组字段，整体对应 tuple 中的一个值，不进行字节序转换。
+/// @tparam Byte 数组元素类型，支持 uint8_t、char 和 std::byte。
+/// @tparam Size 数组的字节数，允许为零。
+/// @tparam Order 保留与数值 Field 一致的模板形式，不影响字节数组的元素顺序。
+template <typename Byte, std::size_t Size, std::endian Order>
+    requires (std::is_same_v<Byte, std::uint8_t> || std::is_same_v<Byte, char> ||
+              std::is_same_v<Byte, std::byte>)
+struct Field<std::array<Byte, Size>, Order> {
+    using value_type = std::array<Byte, Size>;
+    static constexpr std::endian byte_order = Order;
+
+    /// @brief 返回线上字节数，零长度数组不占用字节。
+    static constexpr std::size_t size() noexcept { return Size; }
+
+    /// @brief 将全部数组元素按原顺序写入自身切片，不处理字符串终止符或补零。
+    /// @param value 待编码的完整数组。
+    /// @param output 字段自身的可写字节切片。
+    static constexpr void serialize(const value_type& value,
+                                    std::span<std::uint8_t, size()> output) noexcept {
+        for (std::size_t i = 0; i < Size; ++i) {
+            output[i] = std::bit_cast<std::uint8_t>(value[i]);
+        }
+    }
+
+    /// @brief 按原顺序读取全部字节，返回拥有独立数据的数组。
+    /// @param input 字段自身的只读字节切片。
+    /// @return 解码后的完整数组。
+    [[nodiscard]]
+    static constexpr value_type deserialize(std::span<const std::uint8_t, size()> input) noexcept {
+        value_type value{};
+        for (std::size_t i = 0; i < Size; ++i) {
+            value[i] = std::bit_cast<Byte>(input[i]);
+        }
+        return value;
     }
 };
 

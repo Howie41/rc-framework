@@ -1,5 +1,7 @@
 #pragma once
 
+#include "static_list.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -10,6 +12,7 @@ class PidController;
  *
  * PidController 在构造时自动注册到该单例中。实例编号按照构造顺序从
  * 0 开始连续分配，0xFF 保留给 Viewer 表示未使用的通道。
+ * 注册须在开始查询前完成；实例须在注册表使用期间存活，不支持注销。
  */
 class PidManager {
 public:
@@ -31,7 +34,6 @@ public:
 private:
     PidManager() = default;
 
-    PidController *head_{nullptr};
-    PidController *tail_{nullptr};
-    std::size_t size_{0U};
+    StaticList<PidController> m_pids;
+    std::size_t m_size{0U};
 };
