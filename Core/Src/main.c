@@ -318,8 +318,19 @@ void Error_Handler(void)
   __HAL_RCC_DMA1_CLK_DISABLE();
   __HAL_RCC_DMA2_CLK_DISABLE();
   __HAL_RCC_DMA2D_CLK_DISABLE();
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
   while (1)
   {
+    HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+    HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
+
+    volatile uint32_t delay_count = 10000000U;
+    while (delay_count > 0U)
+    {
+      __NOP();
+      --delay_count;
+    }
   }
   /* USER CODE END Error_Handler_Debug */
 }
