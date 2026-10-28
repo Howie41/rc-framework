@@ -49,7 +49,7 @@ static_assert(PidInfo::size() == 52 && Ack::size() == 21 && Monitor::size() == 4
 /**
  * @brief PID Viewer 协议处理器。
  *
- * bind() 绑定启用接收流缓冲区的 DMA 串口，update() 在任务中处理收发和监控。
+ * bind() 绑定启用接收流缓冲区的 DMA 串口，heartbeat() 在任务中处理收发和监控。
  * 串口须比 Viewer 活得更久；公开接口应在同一任务调用。
  * 串口 DMA 的初始化与启动由调用方负责。
  */
@@ -115,7 +115,7 @@ public:
      *       发送队列满时暂停读取串口；DMA 发送忙时保留待发帧，其他发送错误丢弃该帧。
      *       未调用 bind() 时直接返回。
      */
-    static void update(uint32_t timestamp_ms) {
+    static void heartbeat(uint32_t timestamp_ms) {
         auto &viewer = instance();
         if (viewer.m_uart_port == nullptr) return;
         viewer.flush_transmit();
