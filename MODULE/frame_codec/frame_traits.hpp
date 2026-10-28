@@ -4,7 +4,7 @@
 
 namespace frame::detail {
 
-/// @brief 判断类型是否为普通数值字段 Field。
+/// @brief 判断类型是否为普通数值或固定长度字节数组字段 Field。
 template <typename T>
 inline constexpr bool is_field = false;
 

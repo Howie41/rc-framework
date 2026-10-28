@@ -141,7 +141,7 @@ static_assert(frame::Frame<>::serialize({}).empty());
 static_assert(frame::Frame<>::deserialize({}).has_value());
 ```
 
-## Field：普通数值字段
+## Field：普通数值或固定长度字节数组字段
 
 ### 构造与参数
 
@@ -149,17 +149,29 @@ static_assert(frame::Frame<>::deserialize({}).has_value());
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `T` | 1、2、4、8 字节整数或 `float`，不允许 bool、const、volatile；float 必须为 IEEE 754 binary32。协议中推荐使用固定宽度整数类型 |
-| `Order` | 字节序，可选小端、大端或本机字节序，默认小端 |
+| `T` | 1、2、4、8 字节整数或 `float`，也支持 `std::array<Byte, N>`，其中 `Byte` 为 `std::uint8_t`、`char` 或 `std::byte`。不允许 bool、const、volatile；float 必须为 IEEE 754 binary32 |
+| `Order` | 数值字段字节序，可选小端、大端或本机字节序，默认小端；字节数组始终按元素原顺序复制，不受此参数影响 |
 
 例如 `Field<std::int16_t, std::endian::big>` 表示两字节有符号大端字段，`Field<float>` 表示四字节小端浮点字段。每个 Field 对应 tuple 中的一个值，重复字段类型不会合并。
+
+固定长度字节数组作为 tuple 中的一个整体值，不会展开成多个标量字段，也不进行堆分配。例如，一个 32 字节名称可以声明为 `Field<std::array<char, 32>>`。
+
+数组按原始字节传输，保留高位字节和内嵌零字节；不添加字符串终止符、不自动截断或补零，这些操作由调用方负责。长度 `N` 可以为零，此时字段仍对应一个数组值，但不占用线上字节。数组仅支持上述字节元素类型，不支持数值数组、原生 C 数组、`std::span` 或变长容器。
+
+```cpp
+using RawBytes = std::array<std::uint8_t, 4>;
+using NamedPacket = frame::Frame<frame::Header<0xAA>, frame::Field<RawBytes>, frame::Field<float>>;
+constexpr auto bytes = NamedPacket::serialize(std::tuple{RawBytes{0xA5, 0x00, 0x80, 0xFF}, 1.0f});
+static_assert(bytes == std::array<std::uint8_t, 9>{0xAA, 0xA5, 0x00, 0x80, 0xFF, 0, 0, 0x80, 0x3F});
+static_assert(std::get<0>(*NamedPacket::deserialize(bytes)) == RawBytes{0xA5, 0x00, 0x80, 0xFF});
+```
 
 ### 方法
 
 | 方法 | 含义 |
 | --- | --- |
-| `size()` | 返回字段宽度 `sizeof(T)` |
-| `serialize(value, output)` | 将数值按目标字节序写入自身切片，返回 void |
+| `size()` | 数值字段返回 `sizeof(T)`，字节数组返回元素个数 `N` |
+| `serialize(value, output)` | 将数值按目标字节序写入自身切片，或按原顺序复制全部数组字节，返回 void |
 | `deserialize(input)` | 从自身切片解码并返回 T |
 
 ## Header / Footer：固定帧头和帧尾
