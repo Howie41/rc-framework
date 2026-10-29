@@ -254,19 +254,41 @@ static_assert(self_length_bytes == std::array<std::uint8_t, 4>{0xAA, 4, 0x34, 0x
 | 参数 | 含义与约束 |
 | --- | --- |
 | `RegionTag` | 参与校验的区域标识，须在当前 Frame 内声明 |
-| `Type` | 选择 Crc8 或 Crc16，默认 Crc16，字段分别占一或两字节 |
+| `Type` | 选择 Crc8、Crc16、Crc32Mpeg2 或 Crc32Mpeg2WordLe，默认 Crc16；字段分别占一、二、四、四字节 |
 | `Order` | 校验值保存到帧中的字节序，默认小端；不改变计算算法 |
 
 ### 算法参数
 
-| 参数 | `CrcType::Crc8` | `CrcType::Crc16` |
-| --- | --- | --- |
-| 多项式 | `0x07` | `0x1021` |
-| 初值 | `0x00` | `0xFFFF` |
-| 输入反射 / 输出反射 | 均为否 | 均为否 |
-| 最终异或值 | `0x00` | `0x0000` |
-| 空区域校验值 | `0x00` | `0xFFFF` |
-| ASCII `123456789` 的校验值 | `0xF4` | `0x29B1` |
+| 参数 | `CrcType::Crc8` | `CrcType::Crc16` | `CrcType::Crc32Mpeg2` | `CrcType::Crc32Mpeg2WordLe` |
+| --- | --- | --- | --- | --- |
+| 多项式 | `0x07` | `0x1021` | `0x04C11DB7` | `0x04C11DB7` |
+| 初值 | `0x00` | `0xFFFF` | `0xFFFFFFFF` | `0xFFFFFFFF` |
+| 输入反射 / 输出反射 | 均为否 | 均为否 | 均为否 | 均为否 |
+| 最终异或值 | `0x00` | `0x0000` | `0x00000000` | `0x00000000` |
+| 空区域校验值 | `0x00` | `0xFFFF` | `0xFFFFFFFF` | `0xFFFFFFFF` |
+| ASCII `123456789` 的校验值 | `0xF4` | `0x29B1` | `0x0376E6E7` | `0xAFF19057`（末尾补三个零字节） |
+
+`Crc32Mpeg2` 按线路字节顺序计算，支持任意区域长度。它与常见的 CRC32/IEEE 参数不同，不能互换。
+
+`Crc32Mpeg2WordLe` 对完整的四字节分组采用 IM6014 手册的按字参考算法：每四个线路字节组成一个小端 uint32_t，再从该字的 bit 31 开始输入。例如区域字节 `01 02 03 04 05 06 07 08` 的计算顺序为 `04 03 02 01 08 07 06 05`。区域起始偏移及缓冲地址不要求四字节对齐。
+
+对于不足四字节的末组，本模块约定在区域末尾补零后参与计算。例如 `01 02 03` 视为小端字 `0x00030201`，输入计算的顺序为 `00 03 02 01`。补零仅发生在 CRC 计算中，不写入实际帧，不改变区域长度或后续字段偏移；空区域不添加字，仍返回初值。宇树命令和反馈的校验区域分别为 16 和 20 字节，不涉及补零。
+
+`Order` 只控制最终 CRC 数值在帧中的保存顺序，不改变上述输入顺序。
+
+例如，下面的格式在偏移 2 处对 20 字节数据进行按字校验，生成 26 字节帧：
+
+```cpp
+using FeedbackRegion = frame::RegionTag<22>;
+using CheckedFeedback = frame::Frame<
+    frame::Header<0xFC, 0xEE>,
+    frame::Begin<FeedbackRegion>,
+    frame::Field<std::array<std::uint8_t, 20>>,
+    frame::End<FeedbackRegion>,
+    frame::Crc<FeedbackRegion, frame::CrcType::Crc32Mpeg2WordLe>>;
+
+static_assert(CheckedFeedback::size() == 26);
+```
 
 ### 方法
 
@@ -334,3 +356,15 @@ Frame 先检查输入大小，再解码普通字段到局部 tuple，最后按�
 | `get_region_size<RegionTag>()` | 返回区域字节数，空区域为零 |
 
 `check_region_pairs()`、`check_region_references()`、`check_length_capacity()` 和 `check_crc_coverage()` 均为私有方法，通过 static_assert 自动执行，无需手动调用。
+
+## CRC32 验证
+
+本地测试位于 `tests/frame_codec/crc32`（`tests/` 沿用仓库的 Git 忽略规则）。Windows MinGW 环境可执行：
+
+```powershell
+cmake -S tests/frame_codec/crc32 -B build/crc32-make-tests -G "MinGW Makefiles"
+cmake --build build/crc32-make-tests
+ctest --test-dir build/crc32-make-tests --output-on-failure
+```
+
+覆盖标准校验向量、空区域、独立多项式及手册参考算法、未对齐输入、CRC 保存字节序、20/26 字节帧的不同覆盖范围、逐字节损坏、嵌套 CRC 及 CRC8/CRC16 回归；另验证非整字区域末尾补零的结果，并在编译期验证一、二、三、五、六、七、九字节区域的编解码及实际帧长度。
