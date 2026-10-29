@@ -15,7 +15,7 @@
 
 所有公开类型位于 `frame` 命名空间。`Frame<Elements...>` 和元素只作为格式类型使用，不需要创建对象，也不保存运行时数值或字节视图。
 
-序列化接收普通 Field 数值组成的 tuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<普通字段组成的 tuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的普通字段按声明顺序分别对应 tuple 中的位置。
+`Frame::DataTuple` 是按声明顺序保存普通 Field 数据的 `std::tuple` 类型。序列化接收 DataTuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<DataTuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的普通字段按声明顺序分别对应 tuple 中的位置。
 
 字段宽度和区域范围均在编译期确定，不使用结构体内存布局，不插入字段对齐填充，也不进行堆分配。数值按各字段指定的大小端编码，默认小端。区域标记不占用字节。
 
@@ -85,13 +85,13 @@ static_assert(MotorPacket::size() == 13);
 
 #### 方法签名和含义介绍
 
-下表中 `Ts...` 表示按声明顺序提取的所有普通 Field 的 `value_type`，仅用于说明签名；Frame 不提供额外的值类型或数组类型别名。
+`Frame` 公开 `DataTuple` 类型别名，等价于所有普通 Field 的 `value_type` 按声明顺序组成的 `std::tuple<Ts...>`；没有普通字段时为 `std::tuple<>`。使用 `MotorPacket::DataTuple` 即可声明对应帧的数据 tuple。
 
 | 方法签名 | 含义 |
 | --- | --- |
 | `static constexpr std::size_t size() noexcept` | 获取整帧字节数，空帧返回 `0` |
-| `static constexpr std::array<std::uint8_t, size()> serialize(const std::tuple<Ts...>& values) noexcept` | 根据普通字段值生成完整帧，自动填充固定字节、长度和 CRC |
-| `static constexpr std::expected<std::tuple<Ts...>, Error> deserialize(std::span<const std::uint8_t> input) noexcept` | 检查完整候选帧并返回普通字段值，失败时返回首个错误 |
+| `static constexpr std::array<std::uint8_t, size()> serialize(const DataTuple& data_tuple) noexcept` | 根据普通字段数据生成完整帧，自动填充固定字节、长度和 CRC |
+| `static constexpr std::expected<DataTuple, Error> deserialize(std::span<const std::uint8_t> input) noexcept` | 检查完整候选帧并返回普通字段数据，失败时返回首个错误 |
 
 #### 方法使用示例
 
@@ -99,7 +99,8 @@ static_assert(MotorPacket::size() == 13);
 
 ```cpp
 void motor_packet_example() {
-    auto bytes = MotorPacket::serialize(std::tuple{std::uint16_t{42}, 1.5f});
+    MotorPacket::DataTuple data_tuple{std::uint16_t{42}, 1.5f};
+    auto bytes = MotorPacket::serialize(data_tuple);
     // bytes 为 std::array<std::uint8_t, 13>，可交给通信接口发送。
 
     auto result = MotorPacket::deserialize(bytes);
