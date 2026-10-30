@@ -70,3 +70,29 @@ ctest --test-dir build/c620-tests --output-on-failure
 测试使用独立 HAL 替身，覆盖负值大端编解码、原版首帧/跨圈/减速比算式、槽位跳过及重复处理、多总线中断分发、硬件忙、HAL 失败和失败后使用最新帧，以及多翻译单元包含。
 
 实机仍需验证过滤器、实际反馈频率、总线拥堵及 bus-off。当前工程禁用硬件自动重发，HAL 接受不保证成功交付；本次不修改该配置，也不自动恢复总线。
+
+## IM6014 构造与初始化
+
+构造函数只接收电机 ID 和配置，不接收或保存 Bus。可以在构造时提供 ID 和输出端前馈力矩上限（Nm）：
+
+```cpp
+Im6014Motor motor(0, 5.0f);
+```
+
+构造不发送命令。实机使用时，Bus 绑定已有的 `UartPortDma`；在 RTOS 资源创建完成后依次检查 `bus.init()` 和 `bus.register_device(&motor)` 的结果，可在调度器启动前或任务中执行。运行时由任务调用 `request()`、`process()`，或周期调用 `heartbeat()` 轮询设备。同一电机对象只注册到一条总线，由应用保证。完整调用说明见 [Rs485Bus 说明](../../BSP/rs485_bus/README.md)。
+
+也可以一次指定完整的初始化配置：
+
+```cpp
+Im6014Motor motor(Im6014Motor::Config{
+    .id = 0,
+    .max_output_nm = 20.0f,
+    .reduction_ratio = 38.0f / 3.0f,
+    .mode = Im6014Motor::Mode::Stop,
+    .timeout_protection = true,
+});
+```
+
+Config 默认 ID 为 0、前馈力矩上限为 0、减速比为 38/3、模式为停机，并开启电机超时保护。未注册到总线时，也可独立调用 `build_tx()`、`on_rx()` 进行协议编解码。
+
+构造和 `init()` 共用参数校验逻辑：非法构造参数使对象保持未初始化，`build_tx()` 返回具体错误。需要在初始化时直接获取结果的场景，可保留默认构造，再调用返回 `std::expected<void, Error>` 的 `init(config)` 或 `init(id, max_output_nm)`；初始化失败不改变已有对象状态。
