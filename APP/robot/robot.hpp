@@ -1,59 +1,64 @@
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/** @brief 供 C 启动代码调用，在外设初始化完成后初始化机器人。 */
-void robot_init(void);
-
-#ifdef __cplusplus
-}
-
+#include "asserter.hpp"
+#include "main.h"
+#include "usart.h"
 #include "can_bus.hpp"
 #include "bsp_dwt.hpp"
+#include "rs485_bus.hpp"
+#include "uart_port.hpp"
+#include "im6014.hpp"
 
-class Robot {
-public:
-    Robot() = delete;
+namespace robot {
 
-    inline static CanBus can1_bus{hfdcan1};
-    inline static CanBus can2_bus{hfdcan2};
-    inline static CanBus can3_bus{hfdcan3};
-    inline static bool initialized{false};
+inline bool initialized{false};
 
-    /** @brief 在外设初始化完成后、调度器启动前初始化 DWT 和三路 CAN。 */
-    static void init() {
-        if (initialized) return;
+inline CanBus can1_bus{hfdcan1};
+inline CanBus can2_bus{hfdcan2};
+inline CanBus can3_bus{hfdcan3};
 
-        // TODO(ETH): 在链接脚本中将 .RxDescripSection / .TxDescripSection 收入 RAM_D2，
-        // 分别按 32 字节对齐并纳入启动清零范围；核对 map，避免与 UART DMA 缓冲重叠。
-        // 接入收发时还需检查数据缓冲位置，启用 D-cache 时补齐 MPU 属性或缓存维护。
-        // TODO(ETH): 按硬件确认 ETH_RST 极性、复位时序及参考时钟，在 MX_ETH_Init() 前释放复位。
-        // MX_ETH_Init() 当前在 main() 中先于本函数执行，复位处理需前移；暂不使用 ETH 时暂缓初始化。
+inline UartPortDma<"uart2", 32, 32, 32 * 2> uart2_port{huart2, {}};
+inline Rs485Bus rs4851_bus{uart2_port};
 
-        // CYCCNT 使用 CPU 内核时钟，不能使用二分频后的 HCLK。
-        Dwt::instance().init(SystemCoreClock / 1'000'000U);
+inline Im6014Motor test_motor{0x00, 0};
 
-        // 先建立全部映射，再启动外设，保证中断能找到对应的总线。
-        for (auto *bus : {&can1_bus, &can2_bus, &can3_bus}) {
-            if (bus->init() != 0) {
-                Error_Handler();
-                return;
-            }
-        }
+/**
+ * @brief 初始化 DWT、三路 CAN 总线映射及接收配置，以及 RS-485 总线和电机注册。
+ * @note 由 MX_FREERTOS_Init() 在 rtos_resource_init() 完成后、调度器启动前调用；
+ *       此时外设、队列、流缓冲区和任务已创建，业务任务尚未开始执行。
+ * @note 不得调用任务延时或阻塞等待等依赖调度器运行的操作。
+ * @note 初始化完成后设置 initialized，重复调用直接返回。
+ */
+inline void init() {
+    if (initialized) return;
 
-        // 接收全部标准及扩展数据帧，由 CanDevice 按 ID 进行软件分发。
-        for (auto *handle : {&hfdcan1, &hfdcan2, &hfdcan3}) {
-            can_filter_init(handle, FDCAN_STANDARD_ID, FDCAN_FILTER_TO_RXFIFO0, 0, 0);
-            can_filter_init(handle, FDCAN_EXTENDED_ID, FDCAN_FILTER_TO_RXFIFO1, 0, 0);
-            bsp_can_init(handle);
-        }
+    // TODO(ETH): 在链接脚本中将 .RxDescripSection / .TxDescripSection 收入 RAM_D2，
+    // 分别按 32 字节对齐并纳入启动清零范围；核对 map，避免与 UART DMA 缓冲重叠。
+    // 接入收发时还需检查数据缓冲位置，启用 D-cache 时补齐 MPU 属性或缓存维护。
+    // TODO(ETH): 按硬件确认 ETH_RST 极性、复位时序及参考时钟，在 MX_ETH_Init() 前释放复位。
+    // MX_ETH_Init() 当前在 main() 中先于本函数执行，复位处理需前移；暂不使用 ETH 时暂缓初始化。
 
-        initialized = true;
-        HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
+    // CYCCNT 使用 CPU 内核时钟，不能使用二分频后的 HCLK。
+    Dwt::instance().init(SystemCoreClock / 1'000'000U);
+
+    // 先建立全部映射，再启动外设，保证中断能找到对应的总线。
+    for (auto *bus : {&can1_bus, &can2_bus, &can3_bus}) {
+        auto register_result = bus->init();
+        RUNTIME_ASSERT(register_result == 0);
     }
-};
 
-#endif // __cplusplus
+    RUNTIME_ASSERT(rs4851_bus.init());
+    RUNTIME_ASSERT(rs4851_bus.register_device(&test_motor));
+
+    // 接收全部标准及扩展数据帧，由 CanDevice 按 ID 进行软件分发。
+    for (auto *handle : {&hfdcan1, &hfdcan2, &hfdcan3}) {
+        can_filter_init(handle, FDCAN_STANDARD_ID, FDCAN_FILTER_TO_RXFIFO0, 0, 0);
+        can_filter_init(handle, FDCAN_EXTENDED_ID, FDCAN_FILTER_TO_RXFIFO1, 0, 0);
+        bsp_can_init(handle);
+    }
+
+    initialized = true;
+    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
+}
+};
