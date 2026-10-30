@@ -32,5 +32,10 @@ public:
     void release() noexcept {
         m_is_locked.store(false, std::memory_order_release);
     }
+
+    /// @brief 读取当前忙状态，仅用于观察，不获取锁。
+    [[nodiscard]] bool is_locked() const noexcept {
+        return m_is_locked.load(std::memory_order_acquire);
+    }
 };
 
