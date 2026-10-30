@@ -4,7 +4,6 @@ CompileFlags:
     - -fconserve-stack
     - -fno-var-tracking-assignments
   CompilationDatabase: build/Debug
-CompilationDatabase: build/Debug
 Diagnostics:
   ClangTidy:
     Remove:
