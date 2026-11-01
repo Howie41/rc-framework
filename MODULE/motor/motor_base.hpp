@@ -1,28 +1,47 @@
 #pragma once
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
+#include "rtos_utility.hpp"
+
+#include <cstdint>
 
 /**
- * @brief 电机公共输出、状态与位置速度进程，沿用原 MotorBase 的处理逻辑。
- * @note 具体单位由派生驱动确定；跨任务或中断访问时由调用方保证同步。
+ * @brief 电机公共反馈、减速比、使能状态及反馈时间。
+ * @note 输出命令及使能操作由子类定义；具体反馈单位沿用各型号约定。
+ *       电机对象长期存活，跨任务或中断访问时由调用方保证同步。
  */
 class MotorBase {
 public:
+    /** @brief 公共反馈超时阈值，单位为毫秒。 */
+    static constexpr std::uint32_t kOfflineTimeoutMs{100U};
+
     /** @brief 使用默认参数构造电机基类。 */
     MotorBase() = default;
 
-    /** @brief 设置电机输出，并按最大允许值的绝对值限幅。 */
-    void set_motor_output(float output) {
-        m_output = std::clamp(output, -std::abs(m_max_output), std::abs(m_max_output));
+    /** @brief 请求允许输出，由子类实现并维护 m_enabled。 */
+    virtual void enable() noexcept = 0;
+
+    /** @brief 请求禁止输出，由子类实现并维护 m_enabled。 */
+    virtual void disable() noexcept = 0;
+
+    /** @brief 获取软件使能状态，不表示电机已经转动或硬件已经执行。 */
+    [[nodiscard]] bool is_enabled() const noexcept { return m_enabled; }
+
+    /**
+     * @brief 使用当前 RTOS 毫秒时间判断反馈是否仍有效，达到公共阈值即离线。
+     * @note 0xFFFFFFFFU 保留为尚无有效反馈的标记；无符号差值允许计时回绕，
+     *       实际反馈间隔须小于一个完整的 uint32_t 毫秒计时周期。
+     *       在任务上下文中调用，反馈时间须与 rtos::now_ms() 同源。
+     */
+    [[nodiscard]] bool is_online() const noexcept {
+        return m_last_feedback_ms != 0xFFFFFFFFU &&
+               static_cast<std::uint32_t>(rtos::now_ms() - m_last_feedback_ms) < kOfflineTimeoutMs;
     }
+
+    /** @brief 获取最近有效反馈时间，0xFFFFFFFFU 表示尚无有效反馈。 */
+    [[nodiscard]] std::uint32_t get_last_feedback_ms() const noexcept { return m_last_feedback_ms; }
 
     /** @brief 设置转子到输出端的减速比，调用方应提供正数。 */
     void set_motor_reduction(const float config) { m_reduction_ratio = config; }
-
-    /** @brief 设置输出上限，限幅时取绝对值。 */
-    void set_max_output(const float config) { m_max_output = config; }
 
     /** @brief 获取输出端单圈位置。 */
     [[nodiscard]] float get_current_single_pos() const { return m_single_pos; }
@@ -51,46 +70,7 @@ public:
     /** @brief 获取原始力矩反馈量，含义与单位由派生驱动确定。 */
     [[nodiscard]] float get_raw_current_torque() const { return m_raw_torque; }
 
-    /** @brief 根据进程比例计算原实现的线性速度分量 m_k * x。 */
-    [[nodiscard]] float f_vx_buffer(float x) { return m_k * x; }
-
-    /**
-     * @brief 设置目标位置与速度参数，并重置位置进程。
-     * @param pos 目标累计位置，与反馈位置使用相同单位。
-     * @param speed 速度系数。
-     * @note 目标相对上次目标变化不足 0.01 时，沿用原逻辑直接返回。
-     */
-    void pos_with_speed_control(float pos, float speed) {
-        if (std::fabs(pos - m_tar_sum_pos) < 0.01f) return;
-        m_ini_sum_pos = get_current_sum_pos();
-        m_tar_sum_pos = pos;
-        m_k = speed;
-        m_is_finished = false;
-        m_pos_process = 0.0f;
-    }
-
-    /**
-     * @brief 按原顺序检查已有进程，再更新进程和速度值。
-     * @return 1.8 加上线性速度分量。
-     * @note 未完成时目标位置与起始位置不能相同，调用方需保证该条件。
-     */
-    [[nodiscard]] float update_speed_process() {
-        m_is_finished = get_is_finished();
-        m_pos_process = m_is_finished
-            ? 1.0f
-            : (get_current_sum_pos() - m_ini_sum_pos) / (m_tar_sum_pos - m_ini_sum_pos);
-        m_v = 1.8f + f_vx_buffer(m_pos_process);
-        return m_v;
-    }
-
-    /** @brief 检查已记录的进程是否严格大于阈值，默认阈值为 0.98。 */
-    [[nodiscard]] bool get_is_finished(float threshold = 0.98f) {
-        return m_pos_process > threshold;
-    }
-
-    // 保留原实现的公开成员，供派生驱动更新输出及反馈。
-    float m_output{0};            // 当前输出控制量，单位由派生驱动确定
-    float m_max_output{99999};    // 输出上限，限幅时取绝对值
+protected:
     float m_reduction_ratio{1};   // 转子到输出端的减速比
 
     float m_raw_single_pos{0};    // 转子侧单圈位置
@@ -104,10 +84,6 @@ public:
     float m_torque{0};            // 输出端力矩
     float m_temperature{0};       // 电机温度，单位为摄氏度
 
-    float m_k{0.0f};              // 线性速度分量的系数，由目标速度参数设置
-    float m_tar_sum_pos{0.0f};    // 本次位置控制的目标累计位置
-    float m_ini_sum_pos{0.0f};    // 本次位置控制开始时的累计位置
-    float m_pos_process{0.0f};    // 已记录的位移进程比例，按原算法不做限幅
-    float m_v{0.0f};              // 最近一次计算的速度值，等于 1.8 加上线性速度分量
-    bool m_is_finished{true};     // 最近一次更新速度进程时记录的完成状态
+    bool m_enabled{false};        // 软件是否允许输出，由子类维护
+    std::uint32_t m_last_feedback_ms{0xFFFFFFFFU}; // 最近有效反馈时间，初始值表示尚无反馈
 };

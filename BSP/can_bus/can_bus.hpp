@@ -3,8 +3,10 @@
 #include "main.h"
 #include "fdcan.h"
 #include "atomic_lock.hpp"
+#include "asserter.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace can_detail {
@@ -69,16 +71,18 @@ inline void bsp_can_init(FDCAN_HandleTypeDef* handle) {
 
 class CanBus;
 
-/** @brief 原 CAN 设备基类，提供接收匹配、反馈处理和独立组帧接口。 */
+/** @brief CAN 协议设备，构造时注册到总线，负责反馈处理及本周期报文构建。 */
 class CanDevice {
 public:
-    /** @brief 保存总线指针与收发 ID；构造不自动注册设备。 */
-    CanDevice(CanBus* manager, std::uint32_t id = 0, bool is_extid = false,
-              std::uint32_t tx_id = 0, bool tx_is_extid = false)
-        : m_is_extid(is_extid), m_id(id), m_tx_id(tx_id),
-          m_tx_is_extid(tx_is_extid), m_manager(manager) {}
+    /** @brief 保存接收配置并注册到尚未启动的总线，不保存总线引用，不操作硬件。 */
+    explicit CanDevice(CanBus& bus, std::uint32_t id = 0, bool is_extid = false);
 
     virtual ~CanDevice() = default;
+
+    CanDevice(const CanDevice&) = delete;
+    CanDevice& operator=(const CanDevice&) = delete;
+    CanDevice(CanDevice&&) = delete;
+    CanDevice& operator=(CanDevice&&) = delete;
 
     /** @brief 获取设备接收 ID。 */
     [[nodiscard]] std::uint32_t id() const { return m_id; }
@@ -93,38 +97,37 @@ public:
     [[nodiscard]] virtual bool match_rx(const FDCAN_RxHeaderTypeDef& header) const {
         return (header.IdType == FDCAN_EXTENDED_ID) == m_is_extid && header.Identifier == m_id;
     }
-    /** @brief 处理中断中的接收数据；数据仅在回调期间有效。 */
-    virtual void on_rx(const std::uint8_t data[8], std::uint8_t len) {
-        (void)data;
-        (void)len;
-    }
-    /** @brief 默认不生成独立发送帧，返回 false 并将长度置零。 */
-    [[nodiscard]] virtual bool build_tx(std::uint8_t data[8], std::uint8_t& len) {
-        (void)data;
-        len = 0;
-        return false;
-    }
+    /** @brief 接收 CAN ID 及反馈数据，以便协议设备分发多电机反馈；数据仅在回调期间有效。 */
+    virtual void on_rx(std::uint32_t rx_id, const std::uint8_t data[8], std::uint8_t len) = 0;
+
+    /** @brief 构建本周期的零帧或多帧命令并提交给 bus；全部提交成功返回 true。 */
+    [[nodiscard]] virtual bool build_tx(CanBus& bus) = 0;
 
     bool m_is_extid;
     std::uint32_t m_id;
-    std::uint32_t m_tx_id;
-    bool m_tx_is_extid;
-    CanBus* m_manager{nullptr};
 };
 
 /**
- * @brief 管理一个 FDCAN 外设及最多 6 个设备，沿用原版注册和分发方式。
+ * @brief 管理一个 FDCAN 外设及最多 8 个设备，沿用原版注册和分发方式。
  * @note 总线、设备和 HAL 句柄须在使用期间存活，不能移动总线对象。
  */
 class CanBus {
 public:
+    static constexpr std::size_t kMaxDevices = 8;
+    static constexpr std::size_t kClassicFrameSize = 8;
+    static constexpr std::size_t kMaxRxFrameSize = 64;
+    static constexpr std::uint32_t kStandardIdMax = 0x7FFU;
+    static constexpr std::uint32_t kExtendedIdMax = 0x1FFFFFFFU;
+    static constexpr std::uint32_t kAcceptAllFilterId = 0;
+    static constexpr std::uint32_t kAcceptAllFilterMask = 0;
+
     enum class Type : std::uint8_t { Standard = 0, Extended = 1 };
 
     // 只作为软件参数，不直接发送结构体内存，因此不保留 packed 属性。
     struct ClassicPack {
         std::uint32_t m_id{0};
         Type m_type{Type::Standard};
-        std::uint8_t m_data[8]{};
+        std::uint8_t m_data[kClassicFrameSize]{};
     };
 
     /** @brief 保存当前项目 CubeMX 生成的外设句柄引用。 */
@@ -135,28 +138,40 @@ public:
         return index < m_map.size() ? m_map[index] : nullptr;
     }
 
-    /** @brief 登记总线映射并清空设备表；注册设备和启用中断前调用，0 成功，1 句柄未知。 */
-    [[nodiscard]] std::uint8_t init() {
+    /**
+     * @brief CubeMX 初始化外设后调用：建立映射、配置过滤器、开启通知并启动 CAN。
+     * @note 保留已注册设备；重复调用成功返回，不重复启动。HAL 初始化失败沿用辅助函数的 Error_Handler()。
+     */
+    [[nodiscard]] bool init() {
+        if (m_initialized) return true;
         const auto index = can_detail::bus_index_from_handle(&m_handle);
-        if (index < 0) return 1;
+        if (index < 0) return false;
         m_map[static_cast<std::size_t>(index)] = this;
-        m_devices.fill(nullptr);
-        return 0;
+        can_filter_init(&m_handle, FDCAN_STANDARD_ID, FDCAN_FILTER_TO_RXFIFO0,
+                        kAcceptAllFilterId, kAcceptAllFilterMask);
+        can_filter_init(&m_handle, FDCAN_EXTENDED_ID, FDCAN_FILTER_TO_RXFIFO1,
+                        kAcceptAllFilterId, kAcceptAllFilterMask);
+        bsp_can_init(&m_handle);
+        m_initialized = true;
+        return true;
     }
 
-    /** @brief 注册设备；0 成功或已注册，1 空指针，2 设备表已满；启用中断前调用。 */
-    [[nodiscard]] std::uint8_t register_device(CanDevice* device) {
-        if (device == nullptr) return 1;
+    /** @brief 设备构造时注册；拒绝空指针、重复接收 ID/类型、表满及启动后新增设备。 */
+    [[nodiscard]] bool register_device(CanDevice* device) {
+        if (device == nullptr) return false;
         for (auto* existing : m_devices) {
-            if (existing == device) return 0;
+            if (existing == device) return true;
+            if (existing != nullptr && existing->id() == device->id() &&
+                existing->is_ext_id() == device->is_ext_id()) return false;
         }
+        if (m_initialized) return false;
         for (auto& existing : m_devices) {
             if (existing == nullptr) {
                 existing = device;
-                return 0;
+                return true;
             }
         }
-        return 2;
+        return false;
     }
 
     /**
@@ -165,7 +180,7 @@ public:
      */
     [[nodiscard]] std::uint8_t add_can_msg(const ClassicPack& pack) {
         if ((pack.m_type != Type::Standard && pack.m_type != Type::Extended) ||
-            pack.m_id > (pack.m_type == Type::Standard ? 0x7FFU : 0x1FFFFFFFU)) return 1;
+            pack.m_id > (pack.m_type == Type::Standard ? kStandardIdMax : kExtendedIdMax)) return 1;
         if (!m_tx_lock.try_acquire()) return 1;
         if (hardware_tx_queue_empty_size() == 0) {
             m_tx_lock.release();
@@ -185,17 +200,31 @@ public:
         return result == HAL_OK ? 0 : 1;
     }
 
+    /**
+     * @brief 每周期调用各协议设备的 build_tx(*this)，具体组帧和报文数量由设备决定。
+     * @return 初始化后所有设备处理成功返回 true；无设备时返回 true。
+     * @note 某设备失败仍继续处理其他设备，不缓存失败帧，部分已提交帧不能撤回。
+     */
+    [[nodiscard]] bool heartbeat() {
+        if (!m_initialized) return false;
+        bool success = true;
+        for (auto* device : m_devices) {
+            if (device != nullptr && !device->build_tx(*this)) success = false;
+        }
+        return success;
+    }
+
     /** @brief 按原实现从指定 FIFO 取一帧，遍历设备匹配后调用 on_rx。 */
     void process_rx_interrupt(std::uint32_t fifo) {
         FDCAN_RxHeaderTypeDef header{};
         // HAL 按报文长度复制数据，留足空间后再拒绝非经典帧，避免写越界。
-        std::uint8_t data[64]{};
+        std::uint8_t data[kMaxRxFrameSize]{};
         if (HAL_FDCAN_GetRxMessage(&m_handle, fifo, &header, data) != HAL_OK) return;
         const auto len = can_detail::dlc_to_bytes(header.DataLength);
-        if (len > 8 || header.FDFormat != FDCAN_CLASSIC_CAN ||
+        if (len > kClassicFrameSize || header.FDFormat != FDCAN_CLASSIC_CAN ||
             header.RxFrameType != FDCAN_DATA_FRAME) return;
         for (auto* device : m_devices) {
-            if (device != nullptr && device->match_rx(header)) device->on_rx(data, len);
+            if (device != nullptr && device->match_rx(header)) device->on_rx(header.Identifier, data, len);
         }
     }
 
@@ -208,8 +237,16 @@ private:
     FDCAN_HandleTypeDef& m_handle;
     AtomicLock m_tx_lock;
     inline static std::array<CanBus*, 3> m_map{};
-    std::array<CanDevice*, 6> m_devices{};
+    std::array<CanDevice*, kMaxDevices> m_devices{};
+    bool m_initialized{false};
 };
+
+inline CanDevice::CanDevice(CanBus& bus, std::uint32_t id, bool is_extid)
+    : m_is_extid(is_extid), m_id(id) {
+    // 注册仅读取基类字段并保存指针，派生类构造完成前不调用虚函数、不启动接收。
+    const bool registered = bus.register_device(this);
+    RUNTIME_ASSERT(registered);
+}
 
 // 沿用原版错误状态记录，供调试器观察；不是线程间同步接口。
 inline std::uint32_t g_can_error_state{0};
