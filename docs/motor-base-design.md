@@ -1,8 +1,8 @@
-# MotorBase 基类设计方案
+# MotorBase 与电机通信设计
 
-记录日期：2026-10-31。状态：设计记录，尚未修改实现。
+初始记录：2026-10-31。更新日期：2026-11-01。状态：已实现，本文按当前接口同步。
 
-本方案在现有 `MODULE/motor/motor_base.hpp` 及电机类的基础上调整，不重建电机驱动结构。当前只确定 MotorBase；总线和具体电机的后续修改另行讨论。
+本文记录 `MODULE/motor/motor_base.hpp`、C620、IM6014 及其通信接口的职责。具体使用示例见 [电机说明](../MODULE/motor/README.md)、[CAN 说明](../BSP/can_bus/README.md) 和 [RS485 说明](../BSP/rs485_bus/README.md)。
 
 ## 1. 职责与范围
 
@@ -10,7 +10,7 @@ MotorBase 保存电机通用属性，包括转速、温度、位置、力矩、�
 
 状态更新和控制命令收发由所属总线管理。电机对象不主动调度通信，不包含 PID 计算。PID 控制器计算输出后形成具体电机的输出命令。
 
-本方案不引入 Endpoint，不新增通用驱动层，不要求重命名 `CanBus`、`Rs485Bus`，也不在本轮重新设计注册机制或继承关系。
+保留 `CanBus`、`Rs485Bus`，不引入 Endpoint 或额外的通用驱动层。CAN 由协议设备构造时注册；RS485 设备由应用显式注册，发送由应用组帧入队。
 
 ## 2. 输出命令类型
 
@@ -36,8 +36,8 @@ public:
         float kd{0};
     };
 
-    // 接口示意；具体错误返回方式在子类适配时确定。
-    void set_output_command(const OutputCommand& command);
+    // 命令接口示意；校验失败返回 false，保留原命令。
+    [[nodiscard]] bool set_output_command(const OutputCommand& command) noexcept;
     [[nodiscard]] const OutputCommand& get_output_command() const noexcept;
 
     void enable() noexcept override;
@@ -50,14 +50,14 @@ private:
 Im6014Motor::OutputCommand command{};
 ```
 
-这对应 `Im6014::OutputCommand` 这种访问形式；无需为此重命名现有 `Im6014Motor` 类。C620Motor 同样自行声明 OutputCommand。后续通信方案已调整为 `C620 : CanDevice` 统一管理八个电机、构建两帧和分发反馈，`C620Motor : MotorBase` 仅保留单电机状态与命令，不再继承 CanDevice。使用方式为 `C620 c620{bus}`、`C620Motor motor{c620, motor_id}`。
+通过 `Im6014Motor::OutputCommand` 访问型号专有命令类型。C620Motor 同样自行声明 OutputCommand。`C620 : CanDevice` 统一管理八个电机、构建两帧和分发反馈，`C620Motor : MotorBase` 仅保留单电机状态与命令，不继承 CanDevice。使用方式为 `C620 c620{bus}`、`C620Motor motor{c620, motor_id}`。
 
 命令内容按型号区分：
 
 | 电机 | 命令内容 |
 | --- | --- |
 | C620 系列 | 电流目标，由外部 PID 等控制器计算 |
-| IM6014 | 位置、速度、前馈力矩、位置增益、速度增益；可以沿用现有 `HybridCommand` 的字段 |
+| IM6014 | `position_deg`、`speed_rad_s`、`torque_nm`、`kp`、`kd` |
 | 其他电机 | 由对应型号定义自己的命令结构体 |
 
 基类不统一规定命令字段和数值单位，不提供原先的数值型 `set_motor_output()`。具体命令设置、参数检查以及型号相关的限幅由子类接口决定，不为复用赋值操作引入模板或额外的命令抽象层。
@@ -81,7 +81,7 @@ bool m_enabled{false};
 
 `m_enabled` 表示软件是否允许输出，子类在实现使能接口时维护该状态。它不表示电机已经转动，也不等同于设备反馈的实际工作模式。
 
-C620 不需要存在独立的硬件启动指令才能实现这组接口。其输出门控，以及 IM6014 的模式和命令处理，留到具体电机与总线设计时确定。调用使能接口不直接完成总线发送。
+C620 根据使能状态决定发送目标电流或零电流。IM6014 根据使能状态生成 FOC 命令或停机模式的零目标报文。`disable()` 清空各型号的输出命令，调用使能接口不直接完成总线发送；RS485 已排队的旧报文也不会被改写，应用仍须发送新的停机命令。
 
 ## 4. 公共属性
 
@@ -102,7 +102,7 @@ C620 不需要存在独立的硬件启动指令才能实现这组接口。其输
 | `m_enabled` | 软件使能状态，初始值为 false |
 | `m_last_feedback_ms` | 最近有效反馈的毫秒时间，初始值为 `0xFFFFFFFFU` |
 
-反馈数值沿用现有的零初始化。状态字段放在 `protected` 区域，由现有反馈 getter 对外提供读取；具体总线如何获得写入权限，在后续总线方案中确定。
+反馈数值沿用零初始化。状态字段放在 `protected` 区域，由 getter 对外提供读取。IM6014 在自身反馈解析函数中更新基类字段；C620Motor 将 C620 声明为友元，由 C620 将反馈分发至对应电机。
 
 保留的方法：
 
@@ -131,20 +131,20 @@ std::uint32_t m_last_feedback_ms{0xFFFFFFFFU};
 
 不增加 `m_has_feedback`、`m_offline_timeout_ms` 或缓存的 `m_is_online`。`0xFFFFFFFFU` 作为尚无有效反馈的初始标记。
 
-在线判断使用调用方提供的当前时间和超时阈值，不在电机对象中保存阈值：
+在线判断在任务上下文中读取 `rtos::now_ms()`，使用公共的 100 ms 超时阈值，不在每个对象中保存阈值：
 
 ```cpp
-[[nodiscard]]
-bool is_online(std::uint32_t now_ms,
-               std::uint32_t timeout_ms) const noexcept {
+static constexpr std::uint32_t kOfflineTimeoutMs{100U};
+
+[[nodiscard]] bool is_online() const noexcept {
     return m_last_feedback_ms != 0xFFFFFFFFU &&
-           std::uint32_t(now_ms - m_last_feedback_ms) < timeout_ms;
+           std::uint32_t(rtos::now_ms() - m_last_feedback_ms) < kOfflineTimeoutMs;
 }
 
 [[nodiscard]] std::uint32_t get_last_feedback_ms() const noexcept;
 ```
 
-仅有效反馈成功更新后才更新时间。当前时间和反馈时间使用同一单调毫秒时钟。超时判断、失联后的输出处理、时间回绕及哨兵值边界的具体约束，在后续总线设计中补齐。
+仅有效反馈成功更新后才更新时间。C620 在接收中断中使用 ISR tick，IM6014 在通信任务中使用 RTOS 当前时间，均换算成同源毫秒时间。无符号差值允许时间回绕，实际反馈间隔须小于一个完整 uint32_t 毫秒计时周期；`0xFFFFFFFFU` 保留为尚无有效反馈标记。在线判断不自动禁止输出，失联处置由应用实现。
 
 暂不设计反馈更新时间等辅助方法，也不保留独立的 `has_feedback()` 接口。IM6014 反馈中的设备端超时标志属于型号专有反馈，与主控的在线判断分开。
 
@@ -156,10 +156,13 @@ bool is_online(std::uint32_t now_ms,
 - 电机对象按长期存活使用，不设计析构流程，不显式增加析构函数。
 - 不在基类中保留特定位置进程算法：`f_vx_buffer()`、`pos_with_speed_control()`、`update_speed_process()`、`get_is_finished()`，以及对应的 `m_k`、`m_tar_sum_pos`、`m_ini_sum_pos`、`m_pos_process`、`m_v`、`m_is_finished`。
 
-位置进程属于外部控制逻辑；需要保留该功能时，再随对应控制器迁移，不在本次文档记录中修改代码。
+位置进程属于外部控制逻辑，当前基类不提供这些接口。
 
-## 7. 后续实施范围
+## 7. 当前通信流程
 
-后续落地时，保留 C620 和 IM6014 现有的非模板 MotorBase 继承，分别增加嵌套 OutputCommand、命令存储及访问接口，并实现 enable()/disable()。还需要适配现有 IM6014 初始化代码：加入纯虚使能接口后，MotorBase 将成为抽象类，不能继续使用 `MotorBase{}` 构造临时对象来重置基类状态。
+- CAN 按 `CanBus → C620 → C620Motor` 顺序构造；协议设备和电机在构造时登记。`CanBus::init()` 建立中断映射、配置过滤器并启动外设，保留设备表；应用周期调用 `heartbeat()`，由 C620 构建两组控制帧。
+- RS485 Bus 在 RTOS 资源创建前构造，由应用在通信前调用 `init()` 清空设备表并显式注册设备。UART DMA 接收由应用在 RTOS 资源创建后启动。
+- IM6014 的 `build_tx(output, size)` 生成报文，应用调用 `add_rs485_msg(bytes, &motor)` 入队。同一通信任务先执行 `process_rx()` 再执行 `process_tx()`；总线负责排队、DMA 提交和回复等待，不自动轮询设备。
+- MotorBase 是抽象类，IM6014 初始化时直接清空公共状态并重置解析器，不构造临时 MotorBase 对象。命令设置、初始化及设备组帧接口通过 bool 报告成功与失败。
 
-总线对状态的写入权限、命令收发流程、离线处置，以及输出上限在具体型号中的处理方式尚未展开。本文不将这些事项视为已经实现，也不修改现有源码和使用示例。
+电机反馈、命令和使能状态跨任务或中断访问时，仍由应用保证同步；当前没有统一的反馈快照或临界区封装。总线提交成功不等于硬件已经执行，离线处理和 UART 故障恢复属于应用职责。

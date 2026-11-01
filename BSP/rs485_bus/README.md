@@ -1,6 +1,6 @@
 # Rs485Bus
 
-`Rs485Bus` 绑定已有 `UartPortDma`，管理半双工主机的请求/响应事务。电机负责组帧、搜帧和解析，总线负责 DMA 发送、消费接收流、等待响应和超时处理。方向由 UART 硬件 DE 控制。
+`Rs485Bus` 绑定已有 `UartPortDma`，负责设备注册、发送排队、接收分发及回复等待。设备负责组帧、校验和流式解析，应用决定发送顺序和周期。方向由 UART 硬件 DE 控制。
 
 ## 绑定与调用
 
@@ -14,26 +14,58 @@ Im6014Motor motor(Im6014Motor::Config{
 });
 ```
 
-Motor 构造只接收电机配置，不接收或保存 Bus。上述对象需持续存活。在 RTOS 资源创建完成后，依次检查 `bus.init()` 和 `bus.register_device(&motor)` 的返回值，由 Bus 保存设备指针；这一步可在调度器启动前或 RTOS 任务中执行。构造不会发送命令，也不会自动注册电机。
+上述对象须在 `rtos_resource_init()` 创建队列和流缓冲区之前构造，并在通信期间持续存活。Motor 构造只接收配置，不保存 Bus，不发送命令，也不自动注册。
 
-同一电机对象只注册到一条总线，由应用保证。`request()` 拒绝未在当前总线注册的设备，返回 `NotRegistered`；同一指针重复注册成功，不同设备的 ID 重复则返回 `DuplicateId`。
-
-任务持续调用 `bus.process(now_us)`；空闲时调用 `bus.request(motor, now_us, timeout_us)`，生成当前目标并异步发送。一次只处理一个设备的事务，多电机由应用依次请求。注册、设置目标、请求和处理反馈由同一任务执行；其他任务读取多项反馈时需自行同步。该 UART 的收发由总线独占。
-
-也可周期调用 `bus.heartbeat(now_us)`，统一完成处理和轮询：内部先调用原有 `process()`，成功且空闲时再调用 `request()`，按注册顺序依次访问设备，循环回到第一台。一次最多提交一个请求，等待发送、响应和静默间隔期间不会重复提交；没有注册设备时只处理通信状态。返回值与 `process()` 相同，`true` 表示本次完成一个事务，不表示刚提交的请求已经完成。一次事务完成后若立即提交下一请求失败，则优先返回提交错误。
+初始化顺序为：CubeMX 配置 UART/DMA，创建 RTOS 资源，再完成设备注册并启动 UART 接收。TX DMA 使用 NORMAL，RX DMA 使用 CIRCULAR，UART 模板须启用收发缓冲区和接收流缓冲区。
 
 ```cpp
-// 在 RTOS 任务中初始化、注册之后，每个周期调用；时间单位为微秒。
-const std::uint32_t now_us = rtos::now_ms() * 1000U;
-if (const auto result = bus.heartbeat(now_us); !result) {
-    // 按应用需求记录或处理 result.error()；Faulted 时可显式调用 recover()。
+// 在 RTOS 资源创建后、通信开始前调用。
+void init_rs485() {
+    bus.init();
+    if (!bus.register_device(&motor) ||
+        uart.start_receive_to_idle_dma() != HAL_OK) {
+        Error_Handler();
+    }
 }
 ```
 
-`Config::response_timeout_us` 配置 heartbeat 的响应超时，默认 1000 μs，0 表示只发送，最大 0x7FFFFFFF。例如 1 ms 任务首次通信测试可设置为 3000 μs。该配置不改变手动 `request()` 的超时参数。处理错误时本次不发起下一请求，后续继续调用 heartbeat；响应超时后静默期结束会轮询下一设备，传输故障须先恢复。提交失败时保留当前轮询位置，下次重试该设备。手动调度与自动轮询应由同一任务按需选择，手动请求不会推进自动轮询位置。
+`init()` 返回 void，只清空设备表，不配置 UART、不启动 DMA，也不清空发送队列或进行故障恢复；只能在注册、入队和通信开始前调用。`register_device()` 返回 bool，最多注册 16 个设备，同指针重复注册成功；空指针、重复 ID 或表满返回 false。同一设备只属于一条总线，由应用保证。
 
-`process()` 返回 `std::expected<bool, Rs485Error>`：`true` 表示一次事务完成，`false` 表示仍在等待或当前无事发生；错误由 `unexpected` 返回。`busy()` 包含发送、等待响应、事务后的静默间隔及故障状态。
+## 组帧、入队与周期处理
 
-所有时间参数单位为微秒，`now_us` 使用同一单调 `uint32_t` 时间源，允许回绕。响应超时从 `process()` 观察到 UART 发送完成时开始；缓冲区中已有的有效反馈先于超时判定处理。传入响应超时 0 时只等待发送完成。
+设备先通过 `build_tx(output, size)` 生成报文，再调用 `add_rs485_msg(bytes, response_device)` 入队。总线按值复制报文，队列容量为 4；单帧上限为 `min(UART发送缓冲区大小, 128)` 字节。空报文、长度超限、回复设备未注册或队列满时返回 false。
 
-响应超时后进入静默间隔，随后可请求下一次事务。UART 错误、接收流溢出或发送超时进入 `Faulted`，由应用检查 `recover(now_us)` 结果后恢复；恢复会同步中止并重启 DMA，正常收发过程非阻塞。协议无事务序号时，静默间隔不能保证区分同 ID 的迟到响应。
+```cpp
+// 在控制或通信任务中按应用周期调用；true 只表示报文已入队。
+[[nodiscard]] bool queue_motor_command() {
+    std::array<std::uint8_t, Im6014Motor::CommandFrame::size()> bytes{};
+    std::size_t size = 0;
+    if (!motor.build_tx(bytes, size)) return false;
+    return bus.add_rs485_msg(std::span{bytes}.first(size), &motor);
+}
+
+// 由同一个通信任务持续调用，先接收再发送。
+void process_rs485() {
+    (void)bus.process_rx();
+    (void)bus.process_tx();
+}
+
+// 需要输出时由应用设置命令和使能，例如：
+// motor.enable();
+// if (!motor.set_output_command({.speed_rad_s = 1.0f, .kd = 0.1f})) { ... }
+// if (!queue_motor_command()) { ... }
+```
+
+- `process_rx()` 非阻塞读取最多 64 字节，分发给全部注册设备。设备自行校验地址及协议，半帧保留在设备解析器中；至少一个设备接受有效反馈时返回 true。
+- `process_tx()` 每次至多提交队首一帧，成功提交 HAL 后返回 true 并移除队首。空队列、UART 忙、等待回复、回复超时或 HAL 提交失败均返回 false；HAL 失败时保留队首供后续重试。返回值不表示硬件已完成发送或对方已收到。
+- `response_device == nullptr` 表示不等待回复，但仍须等 UART TC 完成后才能发送下一帧。指定设备时，须收到该设备有效反馈或等待超时后才能继续。
+- 回复超时使用 RTOS 毫秒时间，固定为 `kResponseTimeoutMs = 1`，从通信任务观察到 UART 发送结束时开始计算。回复已收到时直接继续；超时时清空对应设备半帧、结束等待，本次不发送，后续调用再处理队列。
+
+## 生命周期与应用职责
+
+- 多任务可以调用入队接口；`process_rx()`、`process_tx()` 由同一个通信任务串行调用。电机命令、组帧、反馈等共享状态仍由应用保证同步。
+- 总线保存的是入队时的报文字节。之后修改命令或调用 `disable()` 不会改写已排队报文；禁用后还须生成并发送停机命令。
+- 总线不自动轮询设备，不接管 UART 回调，不提供发送看门狗、静默间隔、故障状态或自动恢复。UART 异常、DMA 中止及重启由应用处理。
+- 协议没有事务序号，当前等待逻辑不能保证区分同 ID 的迟到回复。在线判断只反映反馈时效，不自动停止输出。
+
+`Rs485Device::build_tx(output, size)` 成功时返回 true 并设置长度，失败时长度为零。`feed_rx(bytes)` 返回是否至少接受一帧有效反馈；`reset_rx()` 清空半帧，保留已有反馈和命令。
