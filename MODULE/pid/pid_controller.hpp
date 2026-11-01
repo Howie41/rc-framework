@@ -130,18 +130,9 @@ public:
      * 清空输出项、误差状态、计时数据和故障状态，同时保留当前配置。
      */
     void init() {
-        m_ref.store(0.0f, std::memory_order_relaxed);
-        m_iterm = 0.0f;
-        m_err = 0.0f;
-        m_dwt_cnt = 0U;
-        m_dt = 0.0f;
+        reset();
         m_error_count = 0U;
         m_error_type = PID_ERROR_NONE;
-        m_pout = 0.0f;
-        m_iout = 0.0f;
-        m_dout = 0.0f;
-        m_ffout = 0.0f;
-        m_output = 0.0f;
     }
 
     /**
@@ -149,8 +140,23 @@ public:
      * @param measure 当前测量反馈值。
      * @param ref 目标参考值。
      * @return 经过限幅后的控制器输出。
+     * @note 构造、初始化或重置后的首次调用仅建立计时和采样基准，返回零输出。
      */
     ITCM_FUNCTION float calculate(float measure, float ref) {
+        if (!m_dwt_cnt_ready) {
+            // 丢弃首次时间差，等待下一次调用后再按真实采样间隔计算。
+            (void)Dwt::instance().get_delta_t(&m_dwt_cnt);
+            m_dwt_cnt_ready = true;
+            m_measure.store(measure, std::memory_order_relaxed);
+            m_ref.store(ref, std::memory_order_relaxed);
+            m_err = ref - measure;
+            m_last_measure = measure;
+            m_earlier_measure = measure;
+            m_last_err = m_err;
+            m_earlier_err = m_err;
+            return 0.0f;
+        }
+
         if (has_improvement(error_handle)) {
             pid_error_handle();
         }
@@ -240,15 +246,18 @@ public:
     /**
      * @brief 重置控制器累计状态。
      *
-     * 清空 PID 各项、历史采样值、输出历史和计时计数器，同时保留当前配置和故障类型。
+     * 清空 PID 各项、历史采样值、输出历史和计时基准，同时保留当前配置和故障类型。
+     * 下一次 calculate() 仅建立新的基准，返回零输出。
      */
     void reset() {
         m_ref.store(0.0f, std::memory_order_relaxed);
+        m_measure.store(0.0f, std::memory_order_relaxed);
         m_iterm = 0.0f;
         m_err = 0.0f;
         m_pout = 0.0f;
         m_iout = 0.0f;
         m_dout = 0.0f;
+        m_ffout = 0.0f;
         m_output = 0.0f;
         m_last_output = 0.0f;
         m_last_measure = 0.0f;
@@ -258,6 +267,8 @@ public:
         m_last_iterm = 0.0f;
         m_last_dout = 0.0f;
         m_dwt_cnt = 0U;
+        m_dwt_cnt_ready = false;
+        m_dt = 0.0f;
     }
 
     /** @brief 获取 PID 配置的可修改引用。 */
@@ -516,6 +527,7 @@ private:
     float m_last_dout = 0.0f;
     float m_dt = 0.0f;
     uint32_t m_dwt_cnt = 0U;
+    bool m_dwt_cnt_ready{false}; // 已记录有效的 DWT 计时基准。
     uint16_t m_error_count = 0U;
     ErrorType m_error_type = PID_ERROR_NONE;
 
