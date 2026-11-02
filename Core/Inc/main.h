@@ -63,6 +63,12 @@ void Error_Handler(void);
 #define LED2_GPIO_Port GPIOA
 #define ETH_RST_Pin GPIO_PIN_3
 #define ETH_RST_GPIO_Port GPIOA
+#define RS4851_DE_Pin GPIO_PIN_4
+#define RS4851_DE_GPIO_Port GPIOD
+#define RS4851_TX_Pin GPIO_PIN_5
+#define RS4851_TX_GPIO_Port GPIOD
+#define RS4851_RX_Pin GPIO_PIN_6
+#define RS4851_RX_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

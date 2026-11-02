@@ -1,12 +1,13 @@
 ## 介绍
 
-`frame_codec` 提供固定长度二进制帧的序列化和反序列化。通过元素类型声明字段顺序、字节序、长度含义和 CRC 校验范围，自动生成完整帧，或验证输入并还原普通字段数值。
+`frame_codec` 提供固定长度二进制帧的序列化、反序列化和流式搜帧。通过元素类型声明字段顺序、字节序、长度含义和 CRC 校验范围，自动生成完整帧，或从字节流中提取并验证完整帧，还原普通字段数值。
 
 ### 模块组成
 
 | 文件 | 功能 |
 | --- | --- |
 | `frame_codec.hpp` | `Frame`：组织整帧编解码，返回字节数组或解析结果 |
+| `frame_parser.hpp` | `FrameParser`：缓存半帧，从字节流中搜索完整帧并同步回调 |
 | `frame_element.hpp` | 定义 Field、Header、Footer、Length、Crc、region tag 和区域边界标记，提供元素编解码逻辑 |
 | `frame_traits.hpp` | 内部类型识别，区分普通字段、自动字段和区域边界标记 |
 | `frame_layout.hpp` | 内部 Layout：计算元素偏移、区域长度，并在编译期检查格式是否合法 |
@@ -15,7 +16,9 @@
 
 所有公开类型位于 `frame` 命名空间。`Frame<Elements...>` 和元素只作为格式类型使用，不需要创建对象，也不保存运行时数值或字节视图。
 
-序列化接收普通 Field 数值组成的 tuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<普通字段组成的 tuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的普通字段按声明顺序分别对应 tuple 中的位置。
+`FrameParser<FrameType, BufferSize>` 是有状态的解析器实例，内部保存固定容量的字节缓存和构造时传入的函数指针回调，不进行堆分配。调用方从串口或其他来源取得数据后，通过 feed() 输入解析器。
+
+`Frame::DataTuple` 是按声明顺序保存普通 Field 数据的 `std::tuple` 类型。序列化接收 DataTuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<DataTuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的普通字段按声明顺序分别对应 tuple 中的位置。
 
 字段宽度和区域范围均在编译期确定，不使用结构体内存布局，不插入字段对齐填充，也不进行堆分配。数值按各字段指定的大小端编码，默认小端。区域标记不占用字节。
 
@@ -30,7 +33,7 @@
 ### 注意事项
 
 - 当前仅支持固定长度帧，Length 字段不会改变后续字段的偏移。
-- Frame 每次只处理一帧；查找帧头、缓存未收齐的数据、拆包和粘包处理由调用方完成。
+- Frame 每次只处理一帧；流数据可使用 `frame_parser.hpp` 中的 FrameParser 进行搜帧、半帧缓存及拆包和粘包处理。
 - 输入视图长度必须恰好等于帧长度，多余字节同样会解析失败。
 - 返回的字节数组由调用方持有。用于异步发送或 DMA 时，应保证发送完成前数组仍然有效。
 - 反序列化结果拥有独立数值，成功返回后可以复用接收缓冲区。
@@ -85,13 +88,13 @@ static_assert(MotorPacket::size() == 13);
 
 #### 方法签名和含义介绍
 
-下表中 `Ts...` 表示按声明顺序提取的所有普通 Field 的 `value_type`，仅用于说明签名；Frame 不提供额外的值类型或数组类型别名。
+`Frame` 公开 `DataTuple` 类型别名，等价于所有普通 Field 的 `value_type` 按声明顺序组成的 `std::tuple<Ts...>`；没有普通字段时为 `std::tuple<>`。使用 `MotorPacket::DataTuple` 即可声明对应帧的数据 tuple。
 
 | 方法签名 | 含义 |
 | --- | --- |
 | `static constexpr std::size_t size() noexcept` | 获取整帧字节数，空帧返回 `0` |
-| `static constexpr std::array<std::uint8_t, size()> serialize(const std::tuple<Ts...>& values) noexcept` | 根据普通字段值生成完整帧，自动填充固定字节、长度和 CRC |
-| `static constexpr std::expected<std::tuple<Ts...>, Error> deserialize(std::span<const std::uint8_t> input) noexcept` | 检查完整候选帧并返回普通字段值，失败时返回首个错误 |
+| `static constexpr std::array<std::uint8_t, size()> serialize(const DataTuple& data_tuple) noexcept` | 根据普通字段数据生成完整帧，自动填充固定字节、长度和 CRC |
+| `static constexpr std::expected<DataTuple, Error> deserialize(std::span<const std::uint8_t> input) noexcept` | 检查完整候选帧并返回普通字段数据，失败时返回首个错误 |
 
 #### 方法使用示例
 
@@ -99,7 +102,8 @@ static_assert(MotorPacket::size() == 13);
 
 ```cpp
 void motor_packet_example() {
-    auto bytes = MotorPacket::serialize(std::tuple{std::uint16_t{42}, 1.5f});
+    MotorPacket::DataTuple data_tuple{std::uint16_t{42}, 1.5f};
+    auto bytes = MotorPacket::serialize(data_tuple);
     // bytes 为 std::array<std::uint8_t, 13>，可交给通信接口发送。
 
     auto result = MotorPacket::deserialize(bytes);
@@ -140,6 +144,60 @@ static_assert(*FixedPacket::deserialize(fixed_bytes) == std::tuple<>{});
 static_assert(frame::Frame<>::serialize({}).empty());
 static_assert(frame::Frame<>::deserialize({}).has_value());
 ```
+
+## FrameParser：流式搜帧
+
+包含 `frame_parser.hpp` 即可使用，帧类型及所有编解码依赖也会一并包含。模板形式为 `FrameParser<FrameType, BufferSize = FrameType::size()>`，FrameType 必须是非零长度帧，BufferSize 至少容纳一帧。缓冲容量不限制一次 feed() 的输入长度，较长的数据块会分段处理。
+
+### 构造与回调
+
+Parser 公开 `DataTuple = FrameType::DataTuple` 和 `Callbacks`。构造时传入 Callbacks，其 `on_frame` 是签名为 `void(FrameParser&, const DataTuple&)` 的函数指针，可使用普通函数或无捕获 lambda。每成功解析一帧同步回调一次；回调引用仅在调用期间有效，需长期保存时自行复制数据 tuple。回调为空时仍正常解析并返回成功帧数。
+
+以下代码接续前面的 MotorPacket 定义，在多次调用之间保留半帧：
+
+```cpp
+#include "frame_parser.hpp"
+
+using MotorPacketParser = frame::FrameParser<MotorPacket, 64>;
+
+std::size_t parse_motor_chunk(std::span<const std::uint8_t> bytes) {
+    static MotorPacketParser parser({
+        .on_frame = [](MotorPacketParser&, const MotorPacketParser::DataTuple& data_tuple) {
+            const auto& [id, target] = data_tuple;
+            // 在这里按解析出的数据更新应用状态。
+            (void)id;
+            (void)target;
+        }
+    });
+    return parser.feed(bytes);
+}
+```
+
+### 方法与缓存行为
+
+| 方法 | 含义 |
+| --- | --- |
+| `FrameParser(Callbacks callbacks)` | 保存回调配置并初始化空缓存，不绑定串口 |
+| `bool feed(std::uint8_t byte)` | 输入一个字节，成功解析一帧时返回 true |
+| `std::size_t feed(std::span<const std::uint8_t> bytes)` | 输入数据块，返回本次成功解析的帧数；空输入返回零 |
+| `void reset() noexcept` | 丢弃缓存字节，保留回调配置 |
+| `std::size_t buffered_size() const noexcept` | 返回未消费的缓存字节数，可能包含噪声 |
+
+解析器将每个完整候选帧交给 FrameType::deserialize() 验证，不硬编码帧头、CRC 或电机 ID。失败时向后移动一个字节继续搜索，成功时消费整帧并调用回调。每次 feed() 正常返回后，只保留不足一帧的尾部字节；载荷中出现帧头字节不会中断有效帧。
+
+同一实例须由调用方串行访问，回调内不可重入 feed()。允许回调内调用 reset()：它会丢弃已经缓存的后续字节；本次输入中尚未写入缓存的部分仍会继续处理。解析器不管理通信超时，调用方可以在超时后主动 reset()。
+
+### 验证
+
+本地测试位于 `tests/frame_codec/parser`，沿用仓库对 `tests/` 的 Git 忽略规则：
+
+```powershell
+cmake -S tests/frame_codec/parser -B build/frame-parser-tests -G "MinGW Makefiles"
+cmake --build build/frame-parser-tests
+ctest --test-dir build/frame-parser-tests --output-on-failure
+```
+
+覆盖逐字节和任意位置分片、连续多帧、超过缓冲容量的数据块、噪声和各类校验错误后的恢复、载荷内帧头、reset()、空回调、随机分块、单字节帧、CRC32 反馈帧及编译期配置检查。
 
 ## Field：普通数值或固定长度字节数组字段
 
@@ -254,19 +312,41 @@ static_assert(self_length_bytes == std::array<std::uint8_t, 4>{0xAA, 4, 0x34, 0x
 | 参数 | 含义与约束 |
 | --- | --- |
 | `RegionTag` | 参与校验的区域标识，须在当前 Frame 内声明 |
-| `Type` | 选择 Crc8 或 Crc16，默认 Crc16，字段分别占一或两字节 |
+| `Type` | 选择 Crc8、Crc16、Crc32Mpeg2 或 Crc32Mpeg2WordLe，默认 Crc16；字段分别占一、二、四、四字节 |
 | `Order` | 校验值保存到帧中的字节序，默认小端；不改变计算算法 |
 
 ### 算法参数
 
-| 参数 | `CrcType::Crc8` | `CrcType::Crc16` |
-| --- | --- | --- |
-| 多项式 | `0x07` | `0x1021` |
-| 初值 | `0x00` | `0xFFFF` |
-| 输入反射 / 输出反射 | 均为否 | 均为否 |
-| 最终异或值 | `0x00` | `0x0000` |
-| 空区域校验值 | `0x00` | `0xFFFF` |
-| ASCII `123456789` 的校验值 | `0xF4` | `0x29B1` |
+| 参数 | `CrcType::Crc8` | `CrcType::Crc16` | `CrcType::Crc32Mpeg2` | `CrcType::Crc32Mpeg2WordLe` |
+| --- | --- | --- | --- | --- |
+| 多项式 | `0x07` | `0x1021` | `0x04C11DB7` | `0x04C11DB7` |
+| 初值 | `0x00` | `0xFFFF` | `0xFFFFFFFF` | `0xFFFFFFFF` |
+| 输入反射 / 输出反射 | 均为否 | 均为否 | 均为否 | 均为否 |
+| 最终异或值 | `0x00` | `0x0000` | `0x00000000` | `0x00000000` |
+| 空区域校验值 | `0x00` | `0xFFFF` | `0xFFFFFFFF` | `0xFFFFFFFF` |
+| ASCII `123456789` 的校验值 | `0xF4` | `0x29B1` | `0x0376E6E7` | `0xAFF19057`（末尾补三个零字节） |
+
+`Crc32Mpeg2` 按线路字节顺序计算，支持任意区域长度。它与常见的 CRC32/IEEE 参数不同，不能互换。
+
+`Crc32Mpeg2WordLe` 对完整的四字节分组采用 IM6014 手册的按字参考算法：每四个线路字节组成一个小端 uint32_t，再从该字的 bit 31 开始输入。例如区域字节 `01 02 03 04 05 06 07 08` 的计算顺序为 `04 03 02 01 08 07 06 05`。区域起始偏移及缓冲地址不要求四字节对齐。
+
+对于不足四字节的末组，本模块约定在区域末尾补零后参与计算。例如 `01 02 03` 视为小端字 `0x00030201`，输入计算的顺序为 `00 03 02 01`。补零仅发生在 CRC 计算中，不写入实际帧，不改变区域长度或后续字段偏移；空区域不添加字，仍返回初值。宇树命令和反馈的校验区域分别为 16 和 20 字节，不涉及补零。
+
+`Order` 只控制最终 CRC 数值在帧中的保存顺序，不改变上述输入顺序。
+
+例如，下面的格式在偏移 2 处对 20 字节数据进行按字校验，生成 26 字节帧：
+
+```cpp
+using FeedbackRegion = frame::RegionTag<22>;
+using CheckedFeedback = frame::Frame<
+    frame::Header<0xFC, 0xEE>,
+    frame::Begin<FeedbackRegion>,
+    frame::Field<std::array<std::uint8_t, 20>>,
+    frame::End<FeedbackRegion>,
+    frame::Crc<FeedbackRegion, frame::CrcType::Crc32Mpeg2WordLe>>;
+
+static_assert(CheckedFeedback::size() == 26);
+```
 
 ### 方法
 
@@ -334,3 +414,15 @@ Frame 先检查输入大小，再解码普通字段到局部 tuple，最后按�
 | `get_region_size<RegionTag>()` | 返回区域字节数，空区域为零 |
 
 `check_region_pairs()`、`check_region_references()`、`check_length_capacity()` 和 `check_crc_coverage()` 均为私有方法，通过 static_assert 自动执行，无需手动调用。
+
+## CRC32 验证
+
+本地测试位于 `tests/frame_codec/crc32`（`tests/` 沿用仓库的 Git 忽略规则）。Windows MinGW 环境可执行：
+
+```powershell
+cmake -S tests/frame_codec/crc32 -B build/crc32-make-tests -G "MinGW Makefiles"
+cmake --build build/crc32-make-tests
+ctest --test-dir build/crc32-make-tests --output-on-failure
+```
+
+覆盖标准校验向量、空区域、独立多项式及手册参考算法、未对齐输入、CRC 保存字节序、20/26 字节帧的不同覆盖范围、逐字节损坏、嵌套 CRC 及 CRC8/CRC16 回归；另验证非整字区域末尾补零的结果，并在编译期验证一、二、三、五、六、七、九字节区域的编解码及实际帧长度。

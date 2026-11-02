@@ -64,8 +64,10 @@ protected:
     Callbacks m_callbacks;
 
     AtomicLock m_tx_lock;
+    std::atomic<std::uint32_t> m_tx_complete_count{0};
+    std::atomic<std::uint32_t> m_error_count{0};
 
-    virtual void handle_receive_to_idle_chunk(std::uint16_t size) {};
+    virtual void handle_receive_to_idle_chunk(std::uint16_t) {};
 
 public:
     explicit UartPort(UART_HandleTypeDef& huart, Callbacks callbacks);
@@ -75,6 +77,22 @@ public:
     UartPort& operator=(const UartPort&) = delete;
     UartPort(UartPort&&) = delete;
     UartPort& operator=(UartPort&&) = delete;
+
+    /// @brief 获取所绑定的 HAL 句柄，不转移所有权。
+    [[nodiscard]] UART_HandleTypeDef& handle() noexcept { return m_uart_handle; }
+
+    /// @brief 查询异步发送是否仍在进行；正常 DMA 发送在 UART TC 回调后才结束。
+    [[nodiscard]] bool is_transmitting() const noexcept { return m_tx_lock.is_locked(); }
+
+    /// @brief 获取已完成的异步发送次数，允许 uint32_t 自然回绕。
+    [[nodiscard]] std::uint32_t transmit_complete_count() const noexcept {
+        return m_tx_complete_count.load(std::memory_order_acquire);
+    }
+
+    /// @brief 获取 UART 错误回调次数，包含收发错误，允许 uint32_t 自然回绕。
+    [[nodiscard]] std::uint32_t error_count() const noexcept {
+        return m_error_count.load(std::memory_order_acquire);
+    }
 
     /** @brief 同步接收数据；耗时操作，不要在中断里调用 */
     HAL_StatusTypeDef receive(std::span<std::uint8_t> buffer, std::uint32_t timeout) {
@@ -372,7 +390,8 @@ public:
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
 
-        port->m_tx_lock.release(); // 解除忙碌状态
+        port->m_tx_complete_count.fetch_add(1, std::memory_order_release);
+        port->m_tx_lock.release(); // UART 最后一位发完后解除忙碌状态。
 
         auto callback = port->m_callbacks.on_transmit_complete;
         if (callback == nullptr) return;
@@ -399,10 +418,12 @@ public:
     }
 
     inline static void hal_on_error(UART_HandleTypeDef* huart, std::uint32_t error) {
-        // TODO: TX DMA 出错并结束传输后，应释放软件发送忙标志，允许再次发送。
-        // 需区分 RX 专属错误，避免错误解除仍在进行的 TX 传输。
         auto port = find_uart_port_by_huart(huart);
         if (port == nullptr) return;
+
+        port->m_error_count.fetch_add(1, std::memory_order_release);
+        // HAL 已结束发送时才释放；RX 错误不能解锁仍在进行的 TX。
+        if (huart->gState == HAL_UART_STATE_READY) port->m_tx_lock.release();
 
         auto callback = port->m_callbacks.on_error;
         if (callback == nullptr) return;

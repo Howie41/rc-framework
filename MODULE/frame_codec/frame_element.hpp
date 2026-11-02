@@ -32,6 +32,8 @@ struct RegionTag {
 enum class CrcType : std::uint8_t {
     Crc8,
     Crc16,
+    Crc32Mpeg2,       ///< 按线路字节顺序计算 CRC32-MPEG2。
+    Crc32Mpeg2WordLe, ///< 每四字节组成小端字，按字的最高位先计算，与电机手册一致。
 };
 
 namespace detail {
@@ -249,56 +251,24 @@ struct Field<std::array<Byte, Size>, Order> {
     }
 };
 
-namespace detail {
-
-/// @brief 计算 CRC8：多项式 0x07，初值 0x00，不反射，最终异或值 0x00。
-/// @param input 参与校验的字节区域，允许为空。
-/// @return 区域的 CRC8，空区域返回 0x00。
-[[nodiscard]]
-constexpr std::uint8_t calculate_crc8(std::span<const std::uint8_t> input) noexcept {
-    std::uint8_t crc = 0x00;
-    for (const auto byte : input) {
-        crc ^= byte;
-        for (std::size_t bit = 0; bit < 8; ++bit) {
-            crc = static_cast<std::uint8_t>((crc & 0x80) != 0
-                                               ? (crc << 1) ^ 0x07
-                                               : crc << 1);
-        }
-    }
-    return crc;
-}
-
-/// @brief 计算 CRC16：多项式 0x1021，初值 0xFFFF，不反射，最终异或值 0x0000。
-/// @param input 参与校验的字节区域，允许为空。
-/// @return 区域的 CRC16，空区域返回 0xFFFF。
-[[nodiscard]]
-constexpr std::uint16_t calculate_crc16(std::span<const std::uint8_t> input) noexcept {
-    std::uint16_t crc = 0xFFFF;
-    for (const auto byte : input) {
-        crc ^= static_cast<std::uint16_t>(static_cast<std::uint16_t>(byte) << 8);
-        for (std::size_t bit = 0; bit < 8; ++bit) {
-            crc = static_cast<std::uint16_t>((crc & 0x8000) != 0
-                                                ? (crc << 1) ^ 0x1021
-                                                : crc << 1);
-        }
-    }
-    return crc;
-}
-
-} // namespace detail
-
 /// @brief 自动 CRC 字段，计算指定区域的校验值并写入，或验证已保存的校验值。
 /// @tparam RegionTag 校验区域的 region tag，由对应 Begin、End 标记定义。
-/// @tparam Type CRC 算法，默认为 Crc16；字段宽度随算法为一或两字节。
+/// @tparam Type CRC 算法，默认为 Crc16；字段宽度随算法为一、二或四字节。
 /// @tparam Order 校验值写入帧时的字节序，默认为小端，不影响 CRC 计算算法。
 /// @details 例如 Crc<Payload, CrcType::Crc16, std::endian::big>；编解码时传入自身切片和校验区域。
+///          Crc32Mpeg2WordLe 在计算时将不足四字节的末组补零，不改变帧或区域长度。
 template <typename RegionTag, CrcType Type = CrcType::Crc16,
           std::endian Order = std::endian::little>
 struct Crc {
     static_assert(detail::is_region_tag<RegionTag>, "Crc 要求使用 RegionTag 类型");
+    static_assert(Type == CrcType::Crc8 || Type == CrcType::Crc16 ||
+                      Type == CrcType::Crc32Mpeg2 || Type == CrcType::Crc32Mpeg2WordLe,
+                  "不支持的 CRC 算法");
 
     using region_tag = RegionTag;
-    using value_type = std::conditional_t<Type == CrcType::Crc8, std::uint8_t, std::uint16_t>;
+    using value_type = std::conditional_t<
+        Type == CrcType::Crc8, std::uint8_t,
+        std::conditional_t<Type == CrcType::Crc16, std::uint16_t, std::uint32_t>>;
     static constexpr CrcType type = Type;
     static constexpr std::endian byte_order = Order;
     static constexpr std::size_t size() noexcept { return sizeof(value_type); }
@@ -320,11 +290,90 @@ struct Crc {
     }
 
 private:
+    /// @brief 计算 CRC8：多项式 0x07，初值 0x00，不反射，最终异或值 0x00。
+    /// @param input 参与校验的字节区域，允许为空。
+    /// @return 区域的 CRC8，空区域返回 0x00。
+    [[nodiscard]]
+    static constexpr std::uint8_t calculate_crc8(std::span<const std::uint8_t> input) noexcept {
+        std::uint8_t crc = 0x00;
+        for (const auto byte : input) {
+            crc ^= byte;
+            for (std::size_t bit = 0; bit < 8; ++bit) {
+                crc = static_cast<std::uint8_t>((crc & 0x80) != 0
+                                                   ? (crc << 1) ^ 0x07
+                                                   : crc << 1);
+            }
+        }
+        return crc;
+    }
+
+    /// @brief 计算 CRC16：多项式 0x1021，初值 0xFFFF，不反射，最终异或值 0x0000。
+    /// @param input 参与校验的字节区域，允许为空。
+    /// @return 区域的 CRC16，空区域返回 0xFFFF。
+    [[nodiscard]]
+    static constexpr std::uint16_t calculate_crc16(std::span<const std::uint8_t> input) noexcept {
+        std::uint16_t crc = 0xFFFF;
+        for (const auto byte : input) {
+            crc ^= static_cast<std::uint16_t>(static_cast<std::uint16_t>(byte) << 8);
+            for (std::size_t bit = 0; bit < 8; ++bit) {
+                crc = static_cast<std::uint16_t>((crc & 0x8000) != 0
+                                                    ? (crc << 1) ^ 0x1021
+                                                    : crc << 1);
+            }
+        }
+        return crc;
+    }
+
+    /// @brief 将一个字节按最高位先的顺序计入 CRC32-MPEG2。
+    [[nodiscard]]
+    static constexpr std::uint32_t update_crc32_mpeg2(std::uint32_t crc, std::uint8_t byte) noexcept {
+        crc ^= static_cast<std::uint32_t>(byte) << 24;
+        for (std::size_t bit = 0; bit < 8; ++bit) {
+            crc = (crc & 0x80000000U) != 0 ? (crc << 1) ^ 0x04C11DB7U : crc << 1;
+        }
+        return crc;
+    }
+
+    /// @brief 按线路字节顺序计算 CRC32-MPEG2：初值 0xFFFFFFFF，不反射，无最终异或。
+    /// @param input 参与校验的字节区域，允许为空或任意字节数。
+    /// @return 区域的 CRC32，空区域返回 0xFFFFFFFF。
+    [[nodiscard]]
+    static constexpr std::uint32_t calculate_crc32_mpeg2(std::span<const std::uint8_t> input) noexcept {
+        std::uint32_t crc = 0xFFFFFFFFU;
+        for (const auto byte : input) {
+            crc = update_crc32_mpeg2(crc, byte);
+        }
+        return crc;
+    }
+
+    /// @brief 按小端 32 位字计算 CRC32-MPEG2，每个字内最高位先输入。
+    /// @param input 允许任意字节数及空区域；末组不足四字节时在尾部补零，不要求起始地址对齐。
+    /// @return 区域的 CRC32，空区域返回 0xFFFFFFFF。
+    [[nodiscard]]
+    static constexpr std::uint32_t calculate_crc32_mpeg2_word_le(
+        std::span<const std::uint8_t> input) noexcept {
+        std::uint32_t crc = 0xFFFFFFFFU;
+        for (std::size_t offset = 0; offset < input.size(); offset += 4) {
+            // 等价于读取一个小端 uint32_t 后从 bit 31 输入，不进行未对齐指针转换。
+            const auto remaining = input.size() - offset;
+            for (std::size_t byte = 4; byte > 0; --byte) {
+                const auto index = byte - 1;
+                const auto value = index < remaining ? input[offset + index] : std::uint8_t{0};
+                crc = update_crc32_mpeg2(crc, value);
+            }
+        }
+        return crc;
+    }
+
     static constexpr value_type calculate(std::span<const std::uint8_t> region) noexcept {
         if constexpr (Type == CrcType::Crc8) {
-            return detail::calculate_crc8(region);
+            return calculate_crc8(region);
+        } else if constexpr (Type == CrcType::Crc16) {
+            return calculate_crc16(region);
+        } else if constexpr (Type == CrcType::Crc32Mpeg2) {
+            return calculate_crc32_mpeg2(region);
         } else {
-            return detail::calculate_crc16(region);
+            return calculate_crc32_mpeg2_word_le(region);
         }
     }
 };
