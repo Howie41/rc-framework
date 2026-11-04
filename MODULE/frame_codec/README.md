@@ -147,23 +147,23 @@ static_assert(frame::Frame<>::deserialize({}).has_value());
 
 ## FrameParser：流式搜帧
 
-包含 `frame_parser.hpp` 即可使用，帧类型及所有编解码依赖也会一并包含。模板形式为 `FrameParser<FrameType, BufferSize = FrameType::size()>`，FrameType 必须是非零长度帧，BufferSize 至少容纳一帧。缓冲容量不限制一次 feed() 的输入长度，较长的数据块会分段处理。
+包含 `frame_parser.hpp` 即可使用，帧类型及所有编解码依赖也会一并包含。使用 `FrameParser<FrameType>` 解析一种非零长度的定长帧，缓冲区默认恰好容纳一帧，也可用第二个模板参数指定容量。缓冲容量不限制一次 feed() 的输入长度，较长的数据块会分段处理。
 
 ### 构造与回调
 
-Parser 公开 `DataTuple = FrameType::DataTuple` 和 `Callbacks`。构造时传入 Callbacks，其 `on_frame` 是签名为 `void(FrameParser&, const DataTuple&)` 的函数指针，可使用普通函数或无捕获 lambda。每成功解析一帧同步回调一次；回调引用仅在调用期间有效，需长期保存时自行复制数据 tuple。回调为空时仍正常解析并返回成功帧数。
+构造时可通过 `Callbacks::on_frame` 配置一个函数指针。每成功解析一帧，解析器同步传入自身引用和该帧的 `const DataTuple&`。数据引用仅在回调期间有效，需长期保存时可按值复制。未设置回调时，`feed()` 仍会统计成功解析的帧数。
 
 以下代码接续前面的 MotorPacket 定义，在多次调用之间保留半帧：
 
 ```cpp
 #include "frame_parser.hpp"
 
-using MotorPacketParser = frame::FrameParser<MotorPacket, 64>;
+using MotorPacketParser = frame::FrameParser<MotorPacket>;
 
 std::size_t parse_motor_chunk(std::span<const std::uint8_t> bytes) {
     static MotorPacketParser parser({
-        .on_frame = [](MotorPacketParser&, const MotorPacketParser::DataTuple& data_tuple) {
-            const auto& [id, target] = data_tuple;
+        .on_frame = [](MotorPacketParser&, const MotorPacket::DataTuple& data) {
+            const auto& [id, target] = data;
             // 在这里按解析出的数据更新应用状态。
             (void)id;
             (void)target;

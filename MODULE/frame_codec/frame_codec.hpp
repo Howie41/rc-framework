@@ -28,6 +28,9 @@ private:
         }()...);
     }
 
+    /// @brief 按声明顺序遍历元素。
+    /// @param fn 对元素执行的操作，以元素类型和从零开始的索引作为模板参数。
+    /// @return 所有调用均返回 true 或元素列表为空时返回 true；遇到 false 时立即停止并返回 false。
     template <typename Fn> static constexpr bool for_each_element(Fn&& fn) {
         return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
             return (fn.template operator()<Elements, Indices>() && ...);

@@ -28,7 +28,7 @@ public:
     };
 
     /// @brief 保存回调配置，创建空缓存；不绑定或读取串口。
-    explicit constexpr FrameParser(Callbacks callbacks) noexcept : m_callbacks(callbacks) {}
+    explicit constexpr FrameParser(Callbacks callbacks = {}) noexcept : m_callbacks(callbacks) {}
 
     /// @brief 输入一个字节；成功解析出一帧时返回 true，即使未配置回调。
     constexpr bool feed(std::uint8_t byte) {
