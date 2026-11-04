@@ -247,7 +247,7 @@ private:
         Im6014Motor& motor;
 
         explicit FeedbackParser(Im6014Motor& owner) noexcept
-            : Base({.on_frame = [](Base& parser, const DataTuple& data) {
+            : Base({[](Base& parser, const DataTuple& data) {
                 (void)static_cast<FeedbackParser&>(parser).motor.on_rx(data);
             }}), motor(owner) {}
     };

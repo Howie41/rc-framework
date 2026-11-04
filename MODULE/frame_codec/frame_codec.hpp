@@ -59,6 +59,26 @@ public:
     /// @brief 返回完整帧的字节数。
     static constexpr std::size_t size() noexcept { return Layout::get_frame_size(); }
 
+    /// @brief 返回帧起始处连续的 Header 字节，忽略不占字节的区域标记。
+    static constexpr auto get_header_prefix() noexcept {
+        constexpr auto length = [] {
+            std::size_t count = 0;
+            for_each_element([&]<typename E, std::size_t>() {
+                if constexpr (detail::is_header<E>) count += E::size();
+                return detail::is_header<E> || E::size() == 0;
+            });
+            return count;
+        }();
+        std::array<std::uint8_t, length> prefix{};
+        std::size_t offset = 0;
+        for_each_element([&]<typename E, std::size_t>() {
+            if constexpr (detail::is_header<E>)
+                for (const auto byte : E::bytes) prefix[offset++] = byte;
+            return detail::is_header<E> || E::size() == 0;
+        });
+        return prefix;
+    }
+
     /// @brief 将普通字段的 tuple 编码为完整帧，自动填充固定字段、长度和 CRC。
     /// @param data_tuple 普通字段数据，类型和顺序与元素声明中的 Field 对应。
     /// @return 拥有完整帧字节的数组，无普通字段时传入 std::tuple<>{}。

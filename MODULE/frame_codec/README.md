@@ -16,7 +16,7 @@
 
 所有公开类型位于 `frame` 命名空间。`Frame<Elements...>` 和元素只作为格式类型使用，不需要创建对象，也不保存运行时数值或字节视图。
 
-`FrameParser<FrameType, BufferSize>` 是有状态的解析器实例，内部保存固定容量的字节缓存和构造时传入的函数指针回调，不进行堆分配。调用方从串口或其他来源取得数据后，通过 feed() 输入解析器。
+`FrameParser<Frames...>` 是有状态的解析器实例，内部保存固定容量的字节缓存和构造时传入的函数指针回调，不进行堆分配。调用方从串口或其他来源取得数据后，通过 feed() 输入解析器。
 
 `Frame::DataTuple` 是按声明顺序保存普通 Field 数据的 `std::tuple` 类型。序列化接收 DataTuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<DataTuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的普通字段按声明顺序分别对应 tuple 中的位置。
 
@@ -147,11 +147,11 @@ static_assert(frame::Frame<>::deserialize({}).has_value());
 
 ## FrameParser：流式搜帧
 
-包含 `frame_parser.hpp` 即可使用，帧类型及所有编解码依赖也会一并包含。使用 `FrameParser<FrameType>` 解析一种非零长度的定长帧，缓冲区默认恰好容纳一帧，也可用第二个模板参数指定容量。缓冲容量不限制一次 feed() 的输入长度，较长的数据块会分段处理。
+包含 `frame_parser.hpp` 即可使用，帧类型及所有编解码依赖也会一并包含。使用 `FrameParser<Frames...>` 注册一种或多种非零长度定长帧，缓存默认可容纳最长帧。需要指定容量时使用 `FrameParserWithBuffer<64, Frames...>`。缓冲容量不限制一次 feed() 的输入长度，较长的数据块会分段处理。
 
 ### 构造与回调
 
-构造时可通过 `Callbacks::on_frame` 配置一个函数指针。每成功解析一帧，解析器同步传入自身引用和该帧的 `const DataTuple&`。数据引用仅在回调期间有效，需长期保存时可按值复制。未设置回调时，`feed()` 仍会统计成功解析的帧数。
+`Callbacks` 是函数指针 tuple，顺序与帧类型一一对应，例如 `FrameParser<ReadFrame, WriteFrame> parser({on_read, on_write});`。每解出一帧，解析器同步调用对应回调，传入自身引用和该帧的 `const DataTuple&`。可用 `nullptr` 跳过某种帧的回调。数据引用仅在回调期间有效，需长期保存时可按值复制。未设置回调时，`feed()` 仍会统计成功解析的帧数。
 
 以下代码接续前面的 MotorPacket 定义，在多次调用之间保留半帧：
 
@@ -162,7 +162,7 @@ using MotorPacketParser = frame::FrameParser<MotorPacket>;
 
 std::size_t parse_motor_chunk(std::span<const std::uint8_t> bytes) {
     static MotorPacketParser parser({
-        .on_frame = [](MotorPacketParser&, const MotorPacket::DataTuple& data) {
+        [](MotorPacketParser&, const MotorPacket::DataTuple& data) {
             const auto& [id, target] = data;
             // 在这里按解析出的数据更新应用状态。
             (void)id;
@@ -183,7 +183,7 @@ std::size_t parse_motor_chunk(std::span<const std::uint8_t> bytes) {
 | `void reset() noexcept` | 丢弃缓存字节，保留回调配置 |
 | `std::size_t buffered_size() const noexcept` | 返回未消费的缓存字节数，可能包含噪声 |
 
-解析器将每个完整候选帧交给 FrameType::deserialize() 验证，不硬编码帧头、CRC 或电机 ID。失败时向后移动一个字节继续搜索，成功时消费整帧并调用回调。每次 feed() 正常返回后，只保留不足一帧的尾部字节；载荷中出现帧头字节不会中断有效帧。
+多种帧的固定帧头须能唯一识别类型。帧头取自帧起始处连续的 Header 字节，跳过零长度区域标记；相同或互为前缀的帧头会在编译时报错。只有一种帧时允许省略 Header。Parser 先匹配帧头，收齐对应帧长后交给该类型的 deserialize() 验证。失败时向后移动一个字节继续搜索，成功时消费整帧并调用回调。每次 feed() 正常返回后，只保留不足相应候选帧长度的尾部字节；载荷中出现帧头字节不会中断有效帧。
 
 同一实例须由调用方串行访问，回调内不可重入 feed()。允许回调内调用 reset()：它会丢弃已经缓存的后续字节；本次输入中尚未写入缓存的部分仍会继续处理。解析器不管理通信超时，调用方可以在超时后主动 reset()。
 
