@@ -12,6 +12,16 @@ template <typename T, std::endian Order>
 inline constexpr bool is_field<Field<T, Order>> = true;
 
 template <typename T>
+inline constexpr bool is_bit_field = false;
+
+template <std::size_t Bits, typename T, BitOrder Order>
+inline constexpr bool is_bit_field<BitField<Bits, T, Order>> = true;
+
+/// @brief 数据字段均进入 Frame::DataTuple，自动字段和区域标记不进入。
+template <typename T>
+inline constexpr bool is_data_element = is_field<T> || is_bit_field<T>;
+
+template <typename T>
 inline constexpr bool is_header = false;
 
 template <std::uint8_t... Bytes>

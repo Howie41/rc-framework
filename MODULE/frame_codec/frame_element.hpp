@@ -36,6 +36,12 @@ enum class CrcType : std::uint8_t {
     Crc32Mpeg2WordLe, ///< 每四字节组成小端字，按字的最高位先计算，与电机手册一致。
 };
 
+/// @brief 位字段在字节数组中的打包规则，与完整数值字段的字节序分开定义。
+enum class BitOrder : std::uint8_t {
+    LsbFirst, ///< 字节内从 bit 0 向 bit 7 填入，字段从低位向高位取位。
+    MsbFirst, ///< 字节内从 bit 7 向 bit 0 填入，字段从高位向低位取位。
+};
+
 namespace detail {
 
 template <typename T>
@@ -211,6 +217,69 @@ struct Field {
     [[nodiscard]]
     static constexpr value_type deserialize(std::span<const std::uint8_t, size()> input) noexcept {
         return detail::deserialize_value<T, Order>(input);
+    }
+};
+
+/// @brief 无符号整数位字段，连续字段紧密打包，每个字段对应 tuple 中的一个值。
+/// @tparam Bits 线上位宽，范围为 1 到 T 的位数。
+/// @tparam T 不带 const 或 volatile 的 1/2/4/8 字节无符号整数类型，不含 bool。
+/// @tparam Order 位打包规则，默认低位优先，不依赖主机字节序。
+/// @details 编码保留数值的低 Bits 位，不限幅；解码零扩展到 T。
+///          直接调用元素编解码时，以 BitOffset 指定自身切片首字节内已使用的位数。
+template <std::size_t Bits, typename T, BitOrder Order = BitOrder::LsbFirst>
+struct BitField {
+    static_assert(std::is_integral_v<T> && std::is_unsigned_v<T> &&
+                      !std::is_same_v<T, bool> &&
+                      std::is_same_v<T, std::remove_cv_t<T>> &&
+                      (sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8),
+                  "BitField 要求使用不带 const 或 volatile 限定且非 bool 的固定宽度无符号整数类型");
+    static_assert(Bits > 0 && Bits <= sizeof(T) * 8, "BitField 位宽必须在 1 到数值类型位数之间");
+    static_assert(Order == BitOrder::LsbFirst || Order == BitOrder::MsbFirst,
+                  "BitField 不支持的位序");
+
+    using value_type = T;
+    static constexpr BitOrder bit_order = Order;
+
+    /// @brief 返回线上位数，不包含相邻字段或字节边界填充。
+    [[nodiscard]]
+    static constexpr std::size_t bit_size() noexcept { return Bits; }
+
+    /// @brief 返回从指定字节内位偏移开始时覆盖的字节数，可能与相邻字段共享字节。
+    template <std::size_t BitOffset = 0> [[nodiscard]]
+    static constexpr std::size_t byte_size() noexcept {
+        static_assert(BitOffset < 8, "BitField 字节内位偏移必须小于 8");
+        return (BitOffset + Bits + 7) / 8;
+    }
+
+    /// @brief 将低 Bits 位写入自身覆盖位置，保留共享字节中其他字段及填充位的内容。
+    template <std::size_t BitOffset = 0>
+    static constexpr void serialize(value_type value,
+                                    std::span<std::uint8_t, byte_size<BitOffset>()> output) noexcept {
+        for (std::size_t i = 0; i < Bits; ++i) {
+            const auto position = BitOffset + i;
+            const auto byte_bit = Order == BitOrder::LsbFirst ? position % 8 : 7 - position % 8;
+            const auto value_bit = Order == BitOrder::LsbFirst ? i : Bits - 1 - i;
+            const auto mask = static_cast<std::uint8_t>(1U << byte_bit);
+            const auto bit = (static_cast<std::uint64_t>(value) >> value_bit) & 1U;
+            output[position / 8] = static_cast<std::uint8_t>(
+                (output[position / 8] & static_cast<std::uint8_t>(~mask)) |
+                (bit != 0 ? mask : std::uint8_t{0}));
+        }
+    }
+
+    /// @brief 读取自身 Bits 位并零扩展，不检查共享字节内的其他字段及填充位。
+    template <std::size_t BitOffset = 0> [[nodiscard]]
+    static constexpr value_type deserialize(
+        std::span<const std::uint8_t, byte_size<BitOffset>()> input) noexcept {
+        std::uint64_t value = 0;
+        for (std::size_t i = 0; i < Bits; ++i) {
+            const auto position = BitOffset + i;
+            const auto byte_bit = Order == BitOrder::LsbFirst ? position % 8 : 7 - position % 8;
+            const auto value_bit = Order == BitOrder::LsbFirst ? i : Bits - 1 - i;
+            const auto bit = static_cast<std::uint64_t>((input[position / 8] >> byte_bit) & 1U);
+            value |= bit << value_bit;
+        }
+        return static_cast<value_type>(value);
     }
 };
 

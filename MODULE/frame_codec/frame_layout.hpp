@@ -12,11 +12,55 @@ namespace frame::detail {
 
 template <typename... Elements>
 class Layout {
+private:
+    static constexpr std::size_t total_elements = sizeof...(Elements);
+
+    struct Positions {
+        std::array<std::size_t, total_elements> offsets{};
+        std::array<std::size_t, total_elements> bit_offsets{};
+        std::array<std::size_t, total_elements> sizes{};
+        std::size_t frame_size{0};
+        bool valid_bit_order{true};
+    };
+
+    // 仅位字段连续累计；其他元素（包括零字节区域标记）先结束当前位字段段。
+    static constexpr Positions calculate_positions() noexcept {
+        Positions positions{};
+        std::size_t bit_position = 0;
+        [[maybe_unused]] std::size_t index = 0;
+        [[maybe_unused]] BitOrder previous_order = BitOrder::LsbFirst;
+        ([&] {
+            using E = Elements;
+            if constexpr (is_bit_field<E>) {
+                const auto bit_offset = bit_position % 8;
+                if (bit_offset != 0 && previous_order != E::bit_order) {
+                    positions.valid_bit_order = false;
+                }
+                positions.offsets[index] = bit_position / 8;
+                positions.bit_offsets[index] = bit_offset;
+                positions.sizes[index] = (bit_offset + E::bit_size() + 7) / 8;
+                bit_position += E::bit_size();
+                previous_order = E::bit_order;
+            } else {
+                bit_position += (8 - bit_position % 8) % 8;
+                positions.offsets[index] = bit_position / 8;
+                positions.sizes[index] = E::size();
+                bit_position += E::size() * 8;
+            }
+            ++index;
+        }(), ...);
+        positions.frame_size = bit_position / 8 + (bit_position % 8 != 0 ? 1 : 0);
+        return positions;
+    }
+
+    inline static constexpr auto kPositions = calculate_positions();
+    static_assert(kPositions.valid_bit_order, "BitField 只能在字节边界切换位序");
+
 public:
     /// @brief 返回完整二进制帧的字节数，区域边界标记不占用字节。
     [[nodiscard]]
     static constexpr std::size_t get_frame_size() noexcept {
-        return (std::size_t{0} + ... + Elements::size());
+        return kPositions.frame_size;
     }
 
     /// @brief 返回指定声明索引的元素相对于帧起始位置的字节偏移，索引从零开始。
@@ -24,13 +68,24 @@ public:
     static constexpr std::size_t get_element_offset() noexcept {
         static_assert(Index < total_elements, "元素索引必须小于元素总数");
         if constexpr (Index < total_elements) {
-            constexpr std::array<std::size_t, total_elements> sizes{Elements::size()...};
-            std::size_t offset = 0;
-            for (std::size_t i = 0; i < Index; ++i) {
-                offset += sizes[i];
-            }
-            return offset;
+            return kPositions.offsets[Index];
         }
+        return 0;
+    }
+
+    /// @brief 返回元素首字节内已使用的位数（0～7），位字段按自身位序解释该偏移。
+    template <std::size_t Index> [[nodiscard]]
+    static constexpr std::size_t get_element_bit_offset() noexcept {
+        static_assert(Index < total_elements, "元素索引必须小于元素总数");
+        if constexpr (Index < total_elements) return kPositions.bit_offsets[Index];
+        return 0;
+    }
+
+    /// @brief 返回元素覆盖的字节数，位字段可能与相邻字段共享首尾字节。
+    template <std::size_t Index> [[nodiscard]]
+    static constexpr std::size_t get_element_size() noexcept {
+        static_assert(Index < total_elements, "元素索引必须小于元素总数");
+        if constexpr (Index < total_elements) return kPositions.sizes[Index];
         return 0;
     }
 
@@ -77,8 +132,6 @@ public:
     }
 
 private:
-    static constexpr std::size_t total_elements = sizeof...(Elements);
-
     // 按声明顺序遍历元素类型。
     template <typename Fn>
     static constexpr bool for_each_element(Fn&& fn) {
@@ -152,10 +205,8 @@ private:
                       !check_length_capacity()) {
             return true;
         } else {
-            constexpr auto offsets = []<std::size_t... Indices>(std::index_sequence<Indices...>) {
-                return std::array<std::size_t, total_elements>{get_element_offset<Indices>()...};
-            }(std::make_index_sequence<total_elements>{});
-            constexpr std::array<std::size_t, total_elements> sizes{Elements::size()...};
+            constexpr auto& offsets = kPositions.offsets;
+            constexpr auto& sizes = kPositions.sizes;
             constexpr std::array<bool, total_elements> crc_fields{is_crc<Elements>...};
             std::size_t index = 0;
             return for_each_element([&]<typename E>() {

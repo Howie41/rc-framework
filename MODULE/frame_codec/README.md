@@ -8,7 +8,7 @@
 | --- | --- |
 | `frame_codec.hpp` | `Frame`：组织整帧编解码，返回字节数组或解析结果 |
 | `frame_parser.hpp` | `FrameParser`：缓存半帧，从字节流中搜索完整帧并同步回调 |
-| `frame_element.hpp` | 定义 Field、Header、Footer、Length、Crc、region tag 和区域边界标记，提供元素编解码逻辑 |
+| `frame_element.hpp` | 定义 Field、BitField、Header、Footer、Length、Crc、region tag 和区域边界标记，提供元素编解码逻辑 |
 | `frame_traits.hpp` | 内部类型识别，区分普通字段、自动字段和区域边界标记 |
 | `frame_layout.hpp` | 内部 Layout：计算元素偏移、区域长度，并在编译期检查格式是否合法 |
 
@@ -18,9 +18,9 @@
 
 `FrameParser<FrameType, BufferSize>` 是有状态的解析器实例，内部保存固定容量的字节缓存和构造时传入的函数指针回调，不进行堆分配。调用方从串口或其他来源取得数据后，通过 feed() 输入解析器。
 
-`Frame::DataTuple` 是按声明顺序保存普通 Field 数据的 `std::tuple` 类型。序列化接收 DataTuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<DataTuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的普通字段按声明顺序分别对应 tuple 中的位置。
+`Frame::DataTuple` 是按声明顺序保存 Field 和 BitField 数据的扁平 `std::tuple` 类型。序列化接收 DataTuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<DataTuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的数据字段按声明顺序分别对应 tuple 中的位置。
 
-字段宽度和区域范围均在编译期确定，不使用结构体内存布局，不插入字段对齐填充，也不进行堆分配。数值按各字段指定的大小端编码，默认小端。区域标记不占用字节。
+字段宽度和区域范围均在编译期确定，不使用结构体内存布局，也不进行堆分配。连续 BitField 紧密排列，遇到其他元素或帧结束时补零到字节边界；纯 Field 帧不插入额外填充。Field 数值按指定字节序编码，默认小端。区域标记自身不占字节，但会结束前面的位字段段。
 
 ## 移植
 
@@ -49,7 +49,7 @@
 
 | 模板参数 | 类型 / 形式 | 默认值 | 含义与约束 |
 | --- | --- | --- | --- |
-| `Elements...` | 元素类型列表 | 可为空 | 按线路字节顺序声明元素；可包含 Field、Header、Footer、Length、Crc、Begin、End |
+| `Elements...` | 元素类型列表 | 可为空 | 按线路顺序声明元素；可包含 Field、BitField、Header、Footer、Length、Crc、Begin、End |
 
 #### 格式声明示例
 
@@ -88,7 +88,7 @@ static_assert(MotorPacket::size() == 13);
 
 #### 方法签名和含义介绍
 
-`Frame` 公开 `DataTuple` 类型别名，等价于所有普通 Field 的 `value_type` 按声明顺序组成的 `std::tuple<Ts...>`；没有普通字段时为 `std::tuple<>`。使用 `MotorPacket::DataTuple` 即可声明对应帧的数据 tuple。
+`Frame` 公开 `DataTuple` 类型别名，等价于所有 Field、BitField 的 `value_type` 按声明顺序组成的 `std::tuple<Ts...>`；没有数据字段时为 `std::tuple<>`。使用 `MotorPacket::DataTuple` 即可声明对应帧的数据 tuple。
 
 | 方法签名 | 含义 |
 | --- | --- |
@@ -231,6 +231,61 @@ static_assert(std::get<0>(*NamedPacket::deserialize(bytes)) == RawBytes{0xA5, 0x
 | `size()` | 数值字段返回 `sizeof(T)`，字节数组返回元素个数 `N` |
 | `serialize(value, output)` | 将数值按目标字节序写入自身切片，或按原顺序复制全部数组字节，返回 void |
 | `deserialize(input)` | 从自身切片解码并返回 T |
+
+## BitField：紧密打包的无符号整数位字段
+
+模板形式为 `BitField<Bits, T, Order = BitOrder::LsbFirst>`，可直接加入 Frame，不需要分组容器。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `Bits` | 线上位宽，要求 `1 <= Bits <= sizeof(T) * 8` |
+| `T` | 不带 const 或 volatile 的 1、2、4、8 字节无符号整数，不支持 bool、有符号整数、float 或数组 |
+| `Order` | 位打包规则，支持 LsbFirst、MsbFirst，默认 LsbFirst |
+
+每个 BitField 对应 tuple 中的一个 T。编码只写数值的低 Bits 位，不限幅、不报范围错误；例如 2048 编码为 11 位时得到零，业务范围检查由调用方负责。解码零扩展到 T。
+
+连续 BitField 从前一个字段结束位置继续填入，允许跨字节。十六个连续 11 位字段共占 22 字节。遇到 Field（包括零长度数组）、Header、Footer、Length、Crc、Begin、End 或帧结束时，向上补齐到完整字节；编码时未使用位写零，解码时忽略。
+
+| 位序 | 字节内填入方向 | 单个字段取位方向 |
+| --- | --- | --- |
+| `BitOrder::LsbFirst` | bit 0 → bit 7 | 数值低位 → 高位 |
+| `BitOrder::MsbFirst` | bit 7 → bit 0 | 数值高位 → 低位 |
+
+位序描述字节数组内的打包方式，与 Field 的字节序、外设发送位的顺序分开处理。字段声明顺序不变。在同一未填满的字节内切换位序会在编译期报错；已经到达字节边界时允许切换。
+
+```cpp
+using Packed = frame::Frame<
+    frame::Header<0xAA>,
+    frame::BitField<11, std::uint16_t>,
+    frame::BitField<5, std::uint8_t>,
+    frame::Field<std::uint16_t, std::endian::big>,
+    frame::Footer<0x55>>;
+
+constexpr Packed::DataTuple packed_data{0x345, 0x12, 0x1234};
+constexpr auto packed_bytes = Packed::serialize(packed_data);
+static_assert(packed_bytes == std::array<std::uint8_t, 6>{0xAA, 0x45, 0x93, 0x12, 0x34, 0x55});
+static_assert(*Packed::deserialize(packed_bytes) == packed_data);
+
+using HighBits = frame::Frame<
+    frame::BitField<11, std::uint16_t, frame::BitOrder::MsbFirst>,
+    frame::BitField<5, std::uint8_t, frame::BitOrder::MsbFirst>>;
+static_assert(HighBits::serialize({0x345, 0x12}) == std::array<std::uint8_t, 2>{0x68, 0xB2});
+```
+
+单个 11 位字段后接 Field<uint16_t> 时，前者占两字节（包含五位填充），后者从下一完整字节开始。Begin、End 保证 Length、CRC 的区域按字节对齐，区域末尾补齐的字节也计入区域长度；CRC 校验实际线路字节，包括填充位。
+
+### 元素级方法
+
+通常使用 Frame 即可。直接操作单个 BitField 时，BitOffset 为自身切片首字节内已经使用的位数（0～7），由上述位序解释；调用方须提供足够的有效切片，单个元素不会清零相邻字段或填充位。
+
+| 方法 | 含义 |
+| --- | --- |
+| `bit_size()` | 返回 Bits，不含边界填充 |
+| `byte_size<BitOffset = 0>()` | 返回覆盖字节数，等于 `(BitOffset + Bits + 7) / 8`，可能与相邻字段共享字节 |
+| `serialize<BitOffset = 0>(value, output)` | 写入自身位，output 为固定长度 `std::span<std::uint8_t, byte_size<BitOffset>()>` |
+| `deserialize<BitOffset = 0>(input)` | 从对应固定长度只读 span 解码并返回 T |
+
+BitField 不提供可相加的独立字节 size()，整帧长度由 Layout 计算。
 
 ## Header / Footer：固定帧头和帧尾
 
@@ -398,7 +453,7 @@ Frame 先检查输入大小，再解码普通字段到局部 tuple，最后按�
 
 ### 编译期检查
 
-格式实例化时自动检查区域唯一配对和嵌套闭合、Length 与 Crc 的 region tag 引用、长度字段容量及 CRC 覆盖依赖。查询元素偏移时拒绝越界索引，查询区域时拒绝未声明的 region tag。
+格式实例化时自动检查区域唯一配对和嵌套闭合、Length 与 Crc 的 region tag 引用、长度字段容量、CRC 覆盖依赖及未对齐的位序切换。BitField 还检查类型、位宽和位序。查询元素偏移时拒绝越界索引，查询区域时拒绝未声明的 region tag。
 
 元素级方法接收自身固定长度切片，直接调用时须提供有效切片及正确的区域参数。Frame 负责准备切片和调度，Layout 负责配置合法性，元素不重复检查这些前提。通常使用 Frame 的整帧接口即可。
 
@@ -410,6 +465,8 @@ Frame 先检查输入大小，再解码普通字段到局部 tuple，最后按�
 | --- | --- |
 | `get_frame_size()` | 返回整帧字节数 |
 | `get_element_offset<Index>()` | 返回从零开始的声明索引所对应元素的字节偏移；零字节边界标记也占用索引 |
+| `get_element_bit_offset<Index>()` | 返回元素首字节内已使用的位数，普通字节元素为零 |
+| `get_element_size<Index>()` | 返回元素覆盖的字节数，位字段可能与相邻字段共享字节，不能简单求和得到帧长 |
 | `get_region_offset<RegionTag>()` | 返回区域起始字节偏移 |
 | `get_region_size<RegionTag>()` | 返回区域字节数，空区域为零 |
 
@@ -426,3 +483,15 @@ ctest --test-dir build/crc32-make-tests --output-on-failure
 ```
 
 覆盖标准校验向量、空区域、独立多项式及手册参考算法、未对齐输入、CRC 保存字节序、20/26 字节帧的不同覆盖范围、逐字节损坏、嵌套 CRC 及 CRC8/CRC16 回归；另验证非整字区域末尾补零的结果，并在编译期验证一、二、三、五、六、七、九字节区域的编解码及实际帧长度。
+
+## BitField 验证
+
+本地测试位于 `tests/frame_codec/bit_field`，沿用仓库对 `tests/` 的 Git 忽略规则：
+
+```powershell
+cmake -S tests/frame_codec/bit_field -B build/frame-bit-field-tests -G "MinGW Makefiles"
+cmake --build build/frame-bit-field-tests
+ctest --test-dir build/frame-bit-field-tests --output-on-failure
+```
+
+覆盖两种位序的已知字节、11 位全部取值在八种起始偏移下的共享位保护、16 通道共 22 字节、未对齐 64 位字段、字节字段混排、区域和填充、CRC、Parser 分片与恢复，以及非法配置的编译失败检查。测试中也包含 constexpr 编解码和纯 Field 帧字节回归。
