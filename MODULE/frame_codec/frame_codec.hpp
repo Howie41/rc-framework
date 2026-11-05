@@ -28,6 +28,9 @@ private:
         }()...);
     }
 
+    /// @brief 按声明顺序遍历元素。
+    /// @param fn 对元素执行的操作，以元素类型和从零开始的索引作为模板参数。
+    /// @return 所有调用均返回 true 或元素列表为空时返回 true；遇到 false 时立即停止并返回 false。
     template <typename Fn> static constexpr bool for_each_element(Fn&& fn) {
         return [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
             return (fn.template operator()<Elements, Indices>() && ...);
@@ -55,6 +58,26 @@ public:
 
     /// @brief 返回完整帧的字节数。
     static constexpr std::size_t size() noexcept { return Layout::get_frame_size(); }
+
+    /// @brief 返回帧起始处连续的 Header 字节，忽略不占字节的区域标记。
+    static constexpr auto get_header_prefix() noexcept {
+        constexpr auto length = [] {
+            std::size_t count = 0;
+            for_each_element([&]<typename E, std::size_t>() {
+                if constexpr (detail::is_header<E>) count += E::size();
+                return detail::is_header<E> || E::size() == 0;
+            });
+            return count;
+        }();
+        std::array<std::uint8_t, length> prefix{};
+        std::size_t offset = 0;
+        for_each_element([&]<typename E, std::size_t>() {
+            if constexpr (detail::is_header<E>)
+                for (const auto byte : E::bytes) prefix[offset++] = byte;
+            return detail::is_header<E> || E::size() == 0;
+        });
+        return prefix;
+    }
 
     /// @brief 将普通字段的 tuple 编码为完整帧，自动填充固定字段、长度和 CRC。
     /// @param data_tuple 数据字段数值，类型和顺序与元素声明中的 Field、BitField 对应。

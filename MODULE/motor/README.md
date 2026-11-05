@@ -81,7 +81,7 @@ C620 只匹配标准帧反馈范围，Bus 调用 `on_rx(rx_id, data, len)` 后�
 Im6014Motor motor(0, 5.0f);
 ```
 
-构造不发送命令。Bus 绑定已有的 `UartPortDma`，须在 RTOS 资源创建前构造。通信开始前调用返回 void 的 `bus.init()` 清空设备表，再检查 `bus.register_device(&motor)` 的 bool 结果；RTOS 资源创建后，由应用调用 `uart.start_receive_to_idle_dma()` 并检查 HAL 返回值。运行时，应用通过 `motor.build_tx(output, size)` 组帧、`bus.add_rs485_msg(bytes, &motor)` 入队，同一个通信任务先调用 `process_rx()` 再调用 `process_tx()`。总线不自动组帧或轮询设备。同一电机对象只注册到一条总线。完整调用说明见 [Rs485Bus 说明](../../BSP/rs485_bus/README.md)。
+构造不发送命令。Bus 绑定已有的 `UartPortDma`，须在 RTOS 资源创建前构造。通信开始前调用返回 void 的 `bus.init()` 清空设备表，再检查 `bus.register_device(&motor)` 的 bool 结果；RTOS 资源创建后，由应用调用 `uart.start_receive_to_idle_dma()` 并检查 HAL 返回值。运行时，应用通过 `motor.build_tx(output, size)` 组帧、`bus.add_rs485_msg(bytes, &motor)` 入队。总线将原始回复字节交给当前请求电机的 `on_rx(bytes)`。IM6014 内部使用 `FrameParser<FeedbackFrame>` 拼接并校验反馈，再更新电机状态。总线依据接收静默推进下一次请求，与电机解析结果无关。同一个通信任务先调用 `bus.process_rx()`，再调用 `bus.process_tx()`。同一电机对象只注册到一条总线。完整调用说明见 [Rs485Bus 说明](../../BSP/rs485_bus/README.md)。
 
 也可以一次指定完整的初始化配置：
 
@@ -95,9 +95,9 @@ Im6014Motor motor(Im6014Motor::Config{
 });
 ```
 
-Config 默认 ID 为 0、前馈力矩上限为 0、减速比为 38/3、模式为停机，并开启电机超时保护。未注册到总线时，也可独立调用 `build_tx(output, size)`、`on_rx()` 或 `feed_rx()` 进行协议编解码。
+Config 默认 ID 为 0、前馈力矩上限为 0、减速比为 38/3、模式为停机，并开启电机超时保护。未注册到总线时，也可独立调用 `build_tx(output, size)` 组帧，或通过 `on_rx(bytes)` 输入反馈字节流，也可将经过协议校验的 DataTuple 交给 `on_rx(data)` 更新反馈。
 
-构造和 `init()` 共用参数校验逻辑：非法构造参数使对象保持未初始化，`id()` 返回 0xFF，`build_tx(output, size)` 返回 false 并将 size 置零。需要直接获取初始化结果时，可默认构造，再调用返回 bool 的 `init(config)` 或 `init(id, max_output_nm)`；失败不改变已有状态，成功则清空命令、反馈和解析半帧，并应用配置。
+构造和 `init()` 共用参数校验逻辑：非法构造参数使对象保持未初始化，`id()` 返回 0xFF，`build_tx(output, size)` 返回 false 并将 size 置零。需要直接获取初始化结果时，可默认构造，再调用返回 bool 的 `init(config)` 或 `init(id, max_output_nm)`；失败不改变已有状态，成功则清空命令、反馈和内部 Parser 的半帧，并应用配置。
 
 `OutputCommand` 包含输出端位置 `position_deg`、速度 `speed_rad_s`、前馈力矩 `torque_nm`、位置增益 `kp` 和速度增益 `kd`。`set_output_command()` 校验参数并限幅前馈力矩，返回 bool，不直接发送，也不改变使能状态。
 

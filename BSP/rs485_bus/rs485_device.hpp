@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <span>
 
-/// @brief RS-485 设备接口，不保存总线关联；设备负责协议编解码和流式解析。
+/// @brief RS-485 设备地址、命令组帧和原始字节接收接口。
 class Rs485Device {
 public:
     virtual ~Rs485Device() = default;
@@ -20,11 +20,10 @@ public:
     /// @note 不得保留 output 视图，成功时 size 须在 1～output.size() 范围内。
     [[nodiscard]] virtual bool build_tx(std::span<std::uint8_t> output,
                                         std::size_t& size) const noexcept = 0;
-    /// @brief 输入接收流；至少接受一帧通过校验且匹配本设备的反馈时返回 true。
-    /// @note 仅有半帧或无有效反馈时返回 false，保留半帧以供后续拼接。
-    virtual bool feed_rx(std::span<const std::uint8_t> bytes) = 0;
-    /// @brief 清空接收半帧；用于回复超时或显式重置，不清除已有反馈。
-    virtual void reset_rx() noexcept = 0;
+
+    /// @brief 接收当前请求的原始回复字节，协议校验和分片拼接由设备实现。
+    /// @note 不得保留 bytes 视图；可能被多次调用以交付同一次回复。
+    virtual void on_rx(std::span<const std::uint8_t> bytes) = 0;
 
 protected:
     Rs485Device() = default;

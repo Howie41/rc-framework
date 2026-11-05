@@ -22,20 +22,34 @@ using namespace frame;
 using CheckedRegion = RegionTag<0>;
 
 using CommandFrame = Frame<
-    Begin<CheckedRegion>, Header<0xFE, 0xEE>,
-    Field<std::uint8_t>, Header<0>,
-    Field<std::int16_t>, Field<std::int16_t>, Field<std::int32_t>,
-    Field<std::int16_t>, Field<std::int16_t>, End<CheckedRegion>,
-    Crc<CheckedRegion, CrcType::Crc32Mpeg2WordLe>
+    Begin<CheckedRegion>,                         // CRC 校验区域开始，包含命令帧头。
+    Header<0xFE, 0xEE>,                            // 命令帧头。
+    Field<std::uint8_t>,                           // 控制字：位 0～3 为 ID，位 4～6 为模式，位 7 为超时保护使能。
+    Header<0>,                                    // 固定保留字节，发送 0。
+    Field<std::int16_t>,                           // 转子侧目标力矩，原始值 / 2560 为 Nm。
+    Field<std::int16_t>,                           // 转子侧目标速度，原始值 / 64 为转/秒。
+    Field<std::int32_t>,                           // 转子侧目标累计位置，每转 32768 个单位。
+    Field<std::int16_t>,                           // 转子侧位置刚度 Kp，编码系数为 12800。
+    Field<std::int16_t>,                           // 转子侧速度阻尼 Kd，编码系数为 51200。
+    End<CheckedRegion>,                           // CRC 校验区域结束，不包含 CRC 字段自身。
+    Crc<CheckedRegion, CrcType::Crc32Mpeg2WordLe>    // 命令 CRC32，按小端 32 位字处理。
 >;
 
 using FeedbackFrame = Frame<
-    Header<0xFC, 0xEE>, Begin<CheckedRegion>,
-    Field<std::uint8_t>, Field<std::int8_t>,
-    Field<std::uint8_t>, Field<std::uint8_t>,
-    Field<std::int16_t>, Field<std::int16_t>, Field<std::int32_t>,
-    Field<std::uint32_t>, Field<std::uint16_t>, Field<std::uint16_t>,
-    End<CheckedRegion>, Crc<CheckedRegion, CrcType::Crc32Mpeg2WordLe>
+    Header<0xFC, 0xEE>,                            // 反馈帧头。
+    Begin<CheckedRegion>,                         // CRC 校验区域开始，不包含反馈帧头。
+    Field<std::uint8_t>,                           // 状态字：位 0～3 为 ID，位 4～6 为模式，位 7 为超时标志。
+    Field<std::int8_t>,                            // 驱动器温度，摄氏度。
+    Field<std::uint8_t>,                           // 电机绕组温度，摄氏度。
+    Field<std::uint8_t>,                           // 母线电压，原始值 × 0.5 为 V。
+    Field<std::int16_t>,                           // 转子侧反馈力矩，原始值 / 2560 为 Nm。
+    Field<std::int16_t>,                           // 转子侧反馈速度，原始值 / 64 为转/秒。
+    Field<std::int32_t>,                           // 转子侧反馈累计位置，每转 32768 个单位。
+    Field<std::uint32_t>,                          // 故障标志位。
+    Field<std::uint16_t>,                          // 告警字段，位 13～15 为告警标志。
+    Field<std::uint16_t>,                          // 保留字段。
+    End<CheckedRegion>,                           // CRC 校验区域结束，不包含 CRC 字段自身。
+    Crc<CheckedRegion, CrcType::Crc32Mpeg2WordLe>    // 反馈 CRC32，按小端 32 位字处理。
 >;
 
 } // namespace im6014_detail
@@ -88,7 +102,7 @@ public:
         return init(Config{.id = id, .max_output_nm = max_output_nm});
     }
 
-    /// @brief 校验配置，成功后清空命令、反馈和解析半帧；失败时保留原状态。
+    /// @brief 校验配置，成功后清空命令和反馈；失败时保留原状态。
     [[nodiscard]] bool init(const Config& config) noexcept {
         if (config.id > 14 || !std::isfinite(config.max_output_nm) || config.max_output_nm < 0 ||
             !std::isfinite(config.reduction_ratio) || config.reduction_ratio <= 0 ||
@@ -98,9 +112,8 @@ public:
             return false;
         }
 
-        // MotorBase 已是抽象类，直接重置公共字段，保留 Parser 对本实例的引用。
         disable();
-        reset_rx();
+        m_parser.reset();
         m_raw_single_pos = m_raw_sum_pos = m_raw_speed = m_raw_torque = 0;
         m_single_pos = m_sum_pos = m_speed = m_torque = m_temperature = 0;
         m_last_feedback_ms = 0xFFFFFFFFU;
@@ -169,30 +182,27 @@ public:
         return true;
     }
 
-    /// @brief 输入接收流；至少接受一帧校验通过且 ID 匹配的反馈时返回 true，保留半帧。
-    bool feed_rx(std::span<const std::uint8_t> bytes) override {
-        m_parser.m_accepted = false;
+    /// @brief 拼接原始回复字节，解析并校验 IM6014 反馈帧。
+    void on_rx(std::span<const std::uint8_t> bytes) override {
         m_parser.feed(bytes);
-        return m_parser.m_accepted;
     }
 
-    /// @brief 丢弃接收半帧，保留已有反馈、在线时间和输出命令。
-    void reset_rx() noexcept override {
-        m_parser.reset();
-        m_parser.m_accepted = false;
-    }
-
-    /// @brief 校验完整反馈帧，成功后更新反馈和 RTOS 毫秒时间；失败时不改变状态。
-    [[nodiscard]] bool on_rx(std::span<const std::uint8_t> bytes) noexcept {
-        const auto result = FeedbackFrame::deserialize(bytes);
-        return result && on_rx(*result);
-    }
-
-    /// @brief 接收 Parser 已校验的反馈数据，不重复校验 CRC；停机和故障反馈也正常保存。
+    /// @brief 接收已校验的反馈数据，不重复校验 CRC；停机和故障反馈也正常保存。
     [[nodiscard]] bool on_rx(const DataTuple& data) noexcept {
         if (m_id == kInvalidId || !std::isfinite(m_reduction_ratio) || m_reduction_ratio <= 0) return false;
-        const auto& [control, driver_temperature, winding_temperature, voltage,
-                     torque, speed, position, error_flags, warning_flags, reserved] = data;
+        const auto& [
+            control,
+            driver_temperature,
+            winding_temperature,
+            voltage,
+            torque,
+            speed,
+            position,
+            error_flags,
+            warning_flags,
+            reserved
+        ] = data;
+
         if ((control & 0x0FU) != m_id) return false;
         (void)reserved;
 
@@ -232,22 +242,20 @@ public:
     [[nodiscard]] std::uint8_t get_warning_flags() const noexcept { return m_warning_flags; }
 
 private:
-    static constexpr std::uint8_t kInvalidId = 0xFF;
-    static constexpr double kTwoPi = 2.0 * std::numbers::pi_v<double>;
+    struct FeedbackParser : frame::FrameParser<FeedbackFrame> {
+        using Base = frame::FrameParser<FeedbackFrame>;
+        Im6014Motor& motor;
 
-    struct FeedbackParser : frame::FrameParser<FeedbackFrame, 64> {
-        using Base = frame::FrameParser<FeedbackFrame, 64>;
-        Im6014Motor& m_motor;
-        bool m_accepted{false};
-
-        explicit FeedbackParser(Im6014Motor& motor) noexcept
-            : Base({.on_frame = [](Base& parser, const DataTuple& data) {
-                auto& receiver = static_cast<FeedbackParser&>(parser);
-                if (receiver.m_motor.on_rx(data)) receiver.m_accepted = true;
-            }}), m_motor(motor) {}
+        explicit FeedbackParser(Im6014Motor& owner) noexcept
+            : Base({[](Base& parser, const DataTuple& data) {
+                (void)static_cast<FeedbackParser&>(parser).motor.on_rx(data);
+            }}), motor(owner) {}
     };
 
     FeedbackParser m_parser{*this};
+    static constexpr std::uint8_t kInvalidId = 0xFF;
+    static constexpr double kTwoPi = 2.0 * std::numbers::pi_v<double>;
+
     OutputCommand m_output_command{};
     float m_max_output_nm{0};
     bool m_timeout_protection{true};
