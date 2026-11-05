@@ -20,7 +20,7 @@ private:
     // 只为普通字段构造数据 tuple，其他元素不占 tuple 位置。
     static constexpr auto make_data_tuple() noexcept {
         return std::tuple_cat([] {
-            if constexpr (detail::is_field<Elements>) {
+            if constexpr (detail::is_data_element<Elements>) {
                 return std::tuple<typename Elements::value_type>{};
             } else {
                 return std::tuple<>{};
@@ -36,7 +36,7 @@ private:
 
     // 元素在 tuple 中的位置等于它之前的普通字段数量。
     template <std::size_t Index> static constexpr std::size_t get_data_tuple_index() noexcept {
-        constexpr std::array<bool, sizeof...(Elements)> fields{detail::is_field<Elements>...};
+        constexpr std::array<bool, sizeof...(Elements)> fields{detail::is_data_element<Elements>...};
         std::size_t count = 0;
         for (std::size_t i = 0; i < Index; ++i)
             count += fields[i];
@@ -50,14 +50,14 @@ private:
     }
 
 public:
-    /// @brief 按声明顺序保存普通 Field 数据的 tuple 类型，不包含自动字段。
+    /// @brief 按声明顺序保存 Field 和 BitField 数据的 tuple 类型，不包含自动字段。
     using DataTuple = decltype(make_data_tuple());
 
     /// @brief 返回完整帧的字节数。
     static constexpr std::size_t size() noexcept { return Layout::get_frame_size(); }
 
     /// @brief 将普通字段的 tuple 编码为完整帧，自动填充固定字段、长度和 CRC。
-    /// @param data_tuple 普通字段数据，类型和顺序与元素声明中的 Field 对应。
+    /// @param data_tuple 数据字段数值，类型和顺序与元素声明中的 Field、BitField 对应。
     /// @return 拥有完整帧字节的数组，无普通字段时传入 std::tuple<>{}。
     [[nodiscard]]
     static constexpr std::array<std::uint8_t, size()>
@@ -69,6 +69,11 @@ public:
                 E::serialize(std::get<get_data_tuple_index<Index>()>(data_tuple),
                              output.template subspan<Layout::template get_element_offset<Index>(),
                                                      E::size()>());
+            } else if constexpr (detail::is_bit_field<E>) {
+                E::template serialize<Layout::template get_element_bit_offset<Index>()>(
+                    std::get<get_data_tuple_index<Index>()>(data_tuple),
+                    output.template subspan<Layout::template get_element_offset<Index>(),
+                                            Layout::template get_element_size<Index>()>());
             }
             return true;
         });
@@ -109,13 +114,19 @@ public:
                 std::get<get_data_tuple_index<Index>()>(data_tuple) = E::deserialize(
                     bytes.template subspan<Layout::template get_element_offset<Index>(),
                                            E::size()>());
+            } else if constexpr (detail::is_bit_field<E>) {
+                std::get<get_data_tuple_index<Index>()>(data_tuple) =
+                    E::template deserialize<Layout::template get_element_bit_offset<Index>()>(
+                        bytes.template subspan<Layout::template get_element_offset<Index>(),
+                                               Layout::template get_element_size<Index>()>());
             }
             return true;
         });
         Error error{};
         const bool valid = for_each_element([&]<typename E, std::size_t Index>() {
             const auto slice =
-                bytes.template subspan<Layout::template get_element_offset<Index>(), E::size()>();
+                bytes.template subspan<Layout::template get_element_offset<Index>(),
+                                       Layout::template get_element_size<Index>()>();
             bool matches = true;
             if constexpr (detail::is_header<E>) {
                 matches = E::deserialize(slice);
