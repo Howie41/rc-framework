@@ -43,7 +43,7 @@ public:
             static_cast<uint16_t>(data[1] | (uint16_t{data[2]} << 8)));
     }
 
-    // 每次调用 bus.heartbeat() 时自动执行。
+    // 每次调用 bus.periodic() 时自动执行。
     bool build_tx(CanBus& bus) override {
         if (target_duty > 100) return false;
         CanBus::ClassicPack pack{}; // 数据默认全为 0
@@ -67,7 +67,7 @@ bool init_led_bus() { // MX_FDCAN1_Init() 完成后调用一次
 bool update_led() { // 初始化成功后，在同一个任务中周期调用
     led.target_duty = 50;
     led.target_duration_ms = 1000;
-    return led_bus.heartbeat();
+    return led_bus.periodic();
 }
 
 uint8_t read_led_duty() { // 在任务中查看最近收到的值
@@ -97,7 +97,7 @@ uint8_t read_led_duty() { // 在任务中查看最近收到的值
   - 设备必须在它之前创建，启动后不能再添加新设备。
   - 成功返回 `true`；未知句柄返回 `false`。HAL 初始化失败会进入项目的 `Error_Handler()`。
   - 重复调用不会重复启动，也不会清掉已经登记的设备。
-- `bool heartbeat()`
+- `bool periodic()`
   - 每个控制周期调用一次，自动执行各设备的 `build_tx()`，使用最新目标发送。
   - 所有设备本次处理成功时返回 `true`；没初始化或有设备失败时返回 `false`。
   - 不会自动定时调用，需要由自己的任务安排周期。
@@ -137,7 +137,7 @@ uint8_t read_led_duty() { // 在任务中查看最近收到的值
   - 它在中断里执行，不要延时或长时间等待。需要保存数据时，当场复制，不要留着 `data` 的指针。
 - `bool build_tx(CanBus& bus)`
   - 在自己的设备类里实现，按例子填写发送 ID 和数据，再调用 `bus.add_can_msg()`。
-  - `heartbeat()` 会自动调用它。可以发零帧、一帧或多帧，全部成功返回 `true`。
+  - `periodic()` 会自动调用它。可以发零帧、一帧或多帧，全部成功返回 `true`。
   - 设备不需要周期发送时，实现为 `return true;` 即可；需要时由应用直接调用总线的发送接口。
 - `uint32_t id() const` / `bool is_ext_id() const`
   - 查看当前配置的接收 ID 和是否为扩展帧。

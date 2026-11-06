@@ -163,7 +163,7 @@ bool init_pid_viewer() {
 }
 
 void update_pid_viewer() { // 初始化成功后，在同一任务中约每 1 毫秒调用
-    PidViewer::heartbeat(rtos::now_ms());
+    PidViewer::periodic(rtos::now_ms());
 }
 ```
 
@@ -174,7 +174,7 @@ UART 的 TX DMA 使用 NORMAL、RX DMA 使用 CIRCULAR，并接好项目的串�
   - 发送缓冲区至少 52 字节，接收缓冲区和接收流缓冲区都要启用。
   - 不会替你启动接收，仍需像示例一样检查 `start_receive_to_idle_dma()` 的结果。
   - Viewer 独占这个串口的接收数据和发送接口，不要再由其他功能读取或发送。
-- `static void heartbeat(uint32_t timestamp_ms)`
+- `static void periodic(uint32_t timestamp_ms)`
   - 在同一个任务里周期调用，建议每 1 毫秒一次，传入当前毫秒时间。
   - 处理电脑发来的指令、发送回复和曲线数据。电脑选好监控通道后，曲线数据每 10 毫秒生成一次。
 - `static bool set_parameter_limits(const ParameterLimits& limits)`

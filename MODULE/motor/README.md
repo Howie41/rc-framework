@@ -24,7 +24,7 @@ bool init_motor() {
 // 在同一个控制任务中周期调用。
 bool update_motor(float current_ma) {
     if (!motor1.set_output_command({.current_ma = current_ma})) return false;
-    bool submitted = motor_bus.heartbeat(); // 把本周期目标交给 CAN 发送
+    bool submitted = motor_bus.periodic(); // 把本周期目标交给 CAN 发送
     float speed = motor1.get_current_speed(); // 输出端速度，rad/s
     (void)speed; // 在这里接入自己的反馈处理
     return submitted;
@@ -44,7 +44,7 @@ bool update_motor(float current_ma) {
   - 同一条总线只创建一个 C620，可以给它配多个 `C620Motor`。
   - 构造时自动登记到总线，不用手动注册，也不在这里启动硬件。
 
-平时不用调用 C620 的组帧和接收方法。每个控制周期先更新所有电机目标，再调用一次 `motor_bus.heartbeat()` 即可。
+平时不用调用 C620 的组帧和接收方法。每个控制周期先更新所有电机目标，再调用一次 `motor_bus.periodic()` 即可。
 
 ### C620Motor
 
@@ -58,10 +58,10 @@ bool update_motor(float current_ma) {
   - 第二项是电流上限，单位 mA，范围 0～20000；实际目标会限制在正负这个值以内。
   - 更新配置，不清空已经收到的位置和速度。
 - `void enable() noexcept`
-  - 允许使用设置的电流目标。实际发送还要继续调用总线的 `heartbeat()`。
+  - 允许使用设置的电流目标。实际发送还要继续调用总线的 `periodic()`。
 - `void disable() noexcept`
   - 禁止输出，并把目标电流清成 0。
-  - 之后仍要继续调用 `heartbeat()`，把零电流发给电调。
+  - 之后仍要继续调用 `periodic()`，把零电流发给电调。
 - `bool set_output_command(const OutputCommand& command) noexcept`
   - 保存目标电流，例如 `motor1.set_output_command({.current_ma = 1000.0f});`。
   - 超过配置上限时自动限制，保存成功返回 `true`。
