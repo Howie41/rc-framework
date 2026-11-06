@@ -1,497 +1,297 @@
-## 介绍
+# frame_codec
 
-`frame_codec` 提供固定长度二进制帧的序列化、反序列化和流式搜帧。通过元素类型声明字段顺序、字节序、长度含义和 CRC 校验范围，自动生成完整帧，或从字节流中提取并验证完整帧，还原普通字段数值。
+下面是一个简单的例子，接下来会围绕这个例子来介绍这个模块。
 
-### 模块组成
+假设我们需要实现这样一个业务：
 
-| 文件 | 功能 |
-| --- | --- |
-| `frame_codec.hpp` | `Frame`：组织整帧编解码，返回字节数组或解析结果 |
-| `frame_parser.hpp` | `FrameParser`：缓存半帧，从字节流中搜索完整帧并同步回调 |
-| `frame_element.hpp` | 定义 Field、BitField、Header、Footer、Length、Crc、region tag 和区域边界标记，提供元素编解码逻辑 |
-| `frame_traits.hpp` | 内部类型识别，区分普通字段、自动字段和区域边界标记 |
-| `frame_layout.hpp` | 内部 Layout：计算元素偏移、区域长度，并在编译期检查格式是否合法 |
+根据接收到的数据帧控制 RGB LED。
 
-### 工作方式
+每帧共 4 字节，位置从 0 开始，按从左到右的顺序发送。
 
-所有公开类型位于 `frame` 命名空间。`Frame<Elements...>` 和元素只作为格式类型使用，不需要创建对象，也不保存运行时数值或字节视图。
+**红灯控制帧**
 
-`FrameParser<Frames...>` 是有状态的解析器实例，内部保存固定容量的字节缓存和构造时传入的函数指针回调，不进行堆分配。调用方从串口或其他来源取得数据后，通过 feed() 输入解析器。
-
-`Frame::DataTuple` 是按声明顺序保存 Field 和 BitField 数据的扁平 `std::tuple` 类型。序列化接收 DataTuple，返回拥有完整字节的 `std::array`；反序列化读取完整候选帧的只读视图，返回 `std::expected<DataTuple, frame::Error>`。元素不会将特殊字段加入 tuple，重复类型的数据字段按声明顺序分别对应 tuple 中的位置。
-
-字段宽度和区域范围均在编译期确定，不使用结构体内存布局，也不进行堆分配。连续 BitField 紧密排列，遇到其他元素或帧结束时补零到字节边界；纯 Field 帧不插入额外填充。Field 数值按指定字节序编码，默认小端。区域标记自身不占字节，但会结束前面的位字段段。
-
-## 移植
-
-将本目录加入头文件搜索路径，包含 `frame_codec.hpp` 即可使用，无需添加 `.cpp` 文件或调用初始化函数。编译器及标准库须支持 C++23，包含 `std::expected`、`std::span`、`std::bit_cast` 等功能；模块不依赖 HAL 或 FreeRTOS。
-
-```cpp
-#include "frame_codec.hpp"
-```
-
-### 注意事项
-
-- 当前仅支持固定长度帧，Length 字段不会改变后续字段的偏移。
-- Frame 每次只处理一帧；流数据可使用 `frame_parser.hpp` 中的 FrameParser 进行搜帧、半帧缓存及拆包和粘包处理。
-- 输入视图长度必须恰好等于帧长度，多余字节同样会解析失败。
-- 返回的字节数组由调用方持有。用于异步发送或 DMA 时，应保证发送完成前数组仍然有效。
-- 反序列化结果拥有独立数值，成功返回后可以复用接收缓冲区。
-- 数值编码实现要求目标采用纯大端或纯小端字节序，float 字段要求 IEEE 754 binary32。
-
-## Frame：完整帧编解码
-
-### 构造
-
-#### 模板和参数说明
-
-模板形式为 `frame::Frame<Elements...>`，无运行时构造参数。通常使用 `using` 声明协议类型，再直接调用静态方法。
-
-| 模板参数 | 类型 / 形式 | 默认值 | 含义与约束 |
+| 帧位置 | 字节 0 | 字节 1 | 字节 2～3 |
 | --- | --- | --- | --- |
-| `Elements...` | 元素类型列表 | 可为空 | 按线路顺序声明元素；可包含 Field、BitField、Header、Footer、Length、Crc、Begin、End |
+| 数据 | 帧头 `0x01` | 占空比 | 亮灯时长（毫秒） |
+| 数据类型 | `uint8_t` | `uint8_t` | `uint16_t` |
 
-#### 格式声明示例
+**绿灯控制帧**
 
-```cpp
-#include "frame_codec.hpp"
+| 帧位置 | 字节 0 | 字节 1 | 字节 2～3 |
+| --- | --- | --- | --- |
+| 数据 | 帧头 `0x02` | 占空比 | 亮灯时长（毫秒） |
+| 数据类型 | `uint8_t` | `uint8_t` | `uint16_t` |
 
-#include <cstdint>
-#include <tuple>
+**蓝灯控制帧**
 
-using MotorPayload = frame::RegionTag<0>;
-using MotorPacket = frame::Frame<
-    frame::Header<0xAA, 0x55>,
-    frame::Length<std::uint8_t, frame::LengthOf<MotorPayload>>,
-    frame::Begin<MotorPayload>,
-    frame::Field<std::uint16_t>,
-    frame::Field<float>,
-    frame::End<MotorPayload>,
-    frame::Crc<MotorPayload>,
-    frame::Footer<0x0D, 0x0A>>;
+| 帧位置 | 字节 0 | 字节 1 | 字节 2～3 |
+| --- | --- | --- | --- |
+| 数据 | 帧头 `0x03` | 占空比 | 亮灯时长（毫秒） |
+| 数据类型 | `uint8_t` | `uint8_t` | `uint16_t` |
 
-static_assert(MotorPacket::size() == 13);
-```
+占空比范围为 `0～100`，`0` 表示灭灯，`100` 表示全亮。亮灯时长范围为 `0～65535` 毫秒，低字节在前，例如 1000 写成 `E8 03`。
 
-该示例的线路布局如下，CRC 只覆盖编号和目标值的六个字节：
+例如 `01 32 E8 03` 表示红灯占空比 50%，亮 1000 毫秒。模块只负责收发这些数值，什么时候关灯由点灯代码处理。
 
-| 字节偏移 | 宽度 | 含义 |
-| --- | --- | --- |
-| 0 | 2 | 固定帧头 `AA 55` |
-| 2 | 1 | Payload 长度，固定为 `06` |
-| 3 | 2 | 编号，uint16 小端 |
-| 5 | 4 | 目标值，float 小端 |
-| 9 | 2 | Payload 的 CRC16，小端 |
-| 11 | 2 | 固定帧尾 `0D 0A` |
-
-### 方法
-
-#### 方法签名和含义介绍
-
-`Frame` 公开 `DataTuple` 类型别名，等价于所有 Field、BitField 的 `value_type` 按声明顺序组成的 `std::tuple<Ts...>`；没有数据字段时为 `std::tuple<>`。使用 `MotorPacket::DataTuple` 即可声明对应帧的数据 tuple。
-
-| 方法签名 | 含义 |
-| --- | --- |
-| `static constexpr std::size_t size() noexcept` | 获取整帧字节数，空帧返回 `0` |
-| `static constexpr std::array<std::uint8_t, size()> serialize(const DataTuple& data_tuple) noexcept` | 根据普通字段数据生成完整帧，自动填充固定字节、长度和 CRC |
-| `static constexpr std::expected<DataTuple, Error> deserialize(std::span<const std::uint8_t> input) noexcept` | 检查完整候选帧并返回普通字段数据，失败时返回首个错误 |
-
-#### 方法使用示例
-
-以下代码接续前面的 `MotorPacket` 声明：
-
-```cpp
-void motor_packet_example() {
-    MotorPacket::DataTuple data_tuple{std::uint16_t{42}, 1.5f};
-    auto bytes = MotorPacket::serialize(data_tuple);
-    // bytes 为 std::array<std::uint8_t, 13>，可交给通信接口发送。
-
-    auto result = MotorPacket::deserialize(bytes);
-    if (result) {
-        auto [id, target] = *result;
-        (void)id;
-        (void)target;
-    } else {
-        const auto error = result.error();
-        // 按 error 处理无效帧。
-        (void)error;
-    }
-}
-```
-
-也可以传入接收缓冲区的切片，调用前应确认已经收到足够字节：
-
-```cpp
-void receive_motor_packet(std::span<const std::uint8_t> received) {
-    if (received.size() < MotorPacket::size()) return;
-    auto result = MotorPacket::deserialize(received.first(MotorPacket::size()));
-    // result 只对应第一帧；剩余数据由外层接收逻辑继续处理。
-    (void)result;
-}
-```
-
-#### expected 取值
-
-先用 `if (result)` 或 `result.has_value()` 判断是否成功。成功时用 `*result` 取得 tuple，再通过结构化绑定或 `std::get<Index>` 取值；失败时调用 `result.error()`。不要在失败时解引用结果，也不要在成功时读取错误。
-
-没有普通字段时，序列化传入空 tuple；空帧同样可以使用：
-
-```cpp
-using FixedPacket = frame::Frame<frame::Header<0xAA>, frame::Footer<0x55>>;
-constexpr auto fixed_bytes = FixedPacket::serialize(std::tuple<>{});
-static_assert(fixed_bytes == std::array<std::uint8_t, 2>{0xAA, 0x55});
-static_assert(*FixedPacket::deserialize(fixed_bytes) == std::tuple<>{});
-static_assert(frame::Frame<>::serialize({}).empty());
-static_assert(frame::Frame<>::deserialize({}).has_value());
-```
-
-## FrameParser：流式搜帧
-
-包含 `frame_parser.hpp` 即可使用，帧类型及所有编解码依赖也会一并包含。使用 `FrameParser<Frames...>` 注册一种或多种非零长度定长帧，缓存默认可容纳最长帧。需要指定容量时使用 `FrameParserWithBuffer<64, Frames...>`。缓冲容量不限制一次 feed() 的输入长度，较长的数据块会分段处理。
-
-### 构造与回调
-
-`Callbacks` 是函数指针 tuple，顺序与帧类型一一对应，例如 `FrameParser<ReadFrame, WriteFrame> parser({on_read, on_write});`。每解出一帧，解析器同步调用对应回调，传入自身引用和该帧的 `const DataTuple&`。可用 `nullptr` 跳过某种帧的回调。数据引用仅在回调期间有效，需长期保存时可按值复制。未设置回调时，`feed()` 仍会统计成功解析的帧数。
-
-以下代码接续前面的 MotorPacket 定义，在多次调用之间保留半帧：
+利用这个模块，我们可以这样实现这个业务（不包括具体点灯逻辑）：
 
 ```cpp
 #include "frame_parser.hpp"
+#include <cstdint>
 
-using MotorPacketParser = frame::FrameParser<MotorPacket>;
+// 三种帧：帧头 + 占空比 + 亮灯时长。占空比为 0～100，时长单位为毫秒。
+using RedFrame = frame::Frame<
+    frame::Header<0x01>,
+    frame::Field<uint8_t>,  // 占空比
+    frame::Field<uint16_t>>; // 亮灯时长（毫秒）
 
-std::size_t parse_motor_chunk(std::span<const std::uint8_t> bytes) {
-    static MotorPacketParser parser({
-        [](MotorPacketParser&, const MotorPacket::DataTuple& data) {
-            const auto& [id, target] = data;
-            // 在这里按解析出的数据更新应用状态。
-            (void)id;
-            (void)target;
+using GreenFrame = frame::Frame<
+    frame::Header<0x02>,
+    frame::Field<uint8_t>,  // 占空比
+    frame::Field<uint16_t>>; // 亮灯时长（毫秒）
+
+using BlueFrame = frame::Frame<
+    frame::Header<0x03>,
+    frame::Field<uint8_t>,  // 占空比
+    frame::Field<uint16_t>>; // 亮灯时长（毫秒）
+
+using LedParser = frame::FrameParser<RedFrame, GreenFrame, BlueFrame>;
+
+// 用于保存各灯的占空比和时长，实际控制灯的代码通过读取这些值来执行。
+uint8_t red_duty{}, green_duty{}, blue_duty{};
+uint16_t red_duration_ms{}, green_duration_ms{}, blue_duration_ms{};
+
+// 解析回调顺序与上面的帧类型顺序一致：红、绿、蓝。
+LedParser parser({
+    [](LedParser&, const RedFrame::DataTuple& data) {
+        // 按顺序从 data 取出两个值：第一个是占空比，第二个是时长。
+        auto [duty, duration_ms] = data;
+        if (duty <= 100) {
+            red_duty = duty;
+            red_duration_ms = duration_ms;
         }
-    });
-    return parser.feed(bytes);
+    },
+    [](LedParser&, const GreenFrame::DataTuple& data) {
+        auto [duty, duration_ms] = data;
+        if (duty <= 100) {
+            green_duty = duty;
+            green_duration_ms = duration_ms;
+        }
+    },
+    [](LedParser&, const BlueFrame::DataTuple& data) {
+        auto [duty, duration_ms] = data;
+        if (duty <= 100) {
+            blue_duty = duty;
+            blue_duration_ms = duration_ms;
+        }
+    }
+});
+
+void example() {
+    // 假设我们收到这样一个帧：“红灯占空比 50%，亮 1000 毫秒”，即01 32 E8 03。
+    // 这里用 serialize() 生成这几个字节，模拟收到的数据。
+    auto bytes = RedFrame::serialize({uint8_t{50}, uint16_t{1000}});
+
+    // 接收这个帧：执行红灯回调，保存占空比 50 和时长 1000；这里不会直接点亮灯。
+    parser.feed(bytes);
 }
 ```
 
-### 方法与缓存行为
+实际接收时，把串口每次收到的数据传给同一个 `parser` 的 `feed()` 方法。没能一次收完也没关系，它会在收齐后再执行对应灯的处理代码。
 
-| 方法 | 含义 |
-| --- | --- |
-| `FrameParser(Callbacks callbacks)` | 保存回调配置并初始化空缓存，不绑定串口 |
-| `bool feed(std::uint8_t byte)` | 输入一个字节，成功解析一帧时返回 true |
-| `std::size_t feed(std::span<const std::uint8_t> bytes)` | 输入数据块，返回本次成功解析的帧数；空输入返回零 |
-| `void reset() noexcept` | 丢弃缓存字节，保留回调配置 |
-| `std::size_t buffered_size() const noexcept` | 返回未消费的缓存字节数，可能包含噪声 |
+### `Frame<Elements...>`
 
-多种帧的固定帧头须能唯一识别类型。帧头取自帧起始处连续的 Header 字节，跳过零长度区域标记；相同或互为前缀的帧头会在编译时报错。只有一种帧时允许省略 Header。Parser 先匹配帧头，收齐对应帧长后交给该类型的 deserialize() 验证。失败时向后移动一个字节继续搜索，成功时消费整帧并调用回调。每次 feed() 正常返回后，只保留不足相应候选帧长度的尾部字节；载荷中出现帧头字节不会中断有效帧。
+定义帧格式。通过 `using 名字 = frame::Frame<...>;` 给帧起名字，后面直接用这个名字调用方法就行。
 
-同一实例须由调用方串行访问，回调内不可重入 feed()。允许回调内调用 reset()：它会丢弃已经缓存的后续字节；本次输入中尚未写入缓存的部分仍会继续处理。解析器不管理通信超时，调用方可以在超时后主动 reset()。
+- `DataTuple`
+  - 存放要发送或已经收到的值。可以把它理解成一组按顺序摆好的数据，像数组一样有第一个、第二个位置。
+  - 例子里第一个位置放占空比，第二个位置放亮灯时长，和两个 `Field` 的顺序一致。帧头不用填。
+  - 这些位置可以是不同类型的值：比如这里的占空比用 `uint8_t`，时长用 `uint16_t`。
+  - 填值可以写 `RedFrame::DataTuple data{uint8_t{50}, uint16_t{1000}};`。
+  - 取值可以写 `auto [duty, duration_ms] = data;`，两个值就分别放进了 `duty` 和 `duration_ms`。这里不用 `data[0]`、`data[1]`。
+- `static constexpr std::array<uint8_t, size()> serialize(const DataTuple& data_tuple) noexcept`
+  - 序列化，即把填好的值变成可以发送的一整条消息。
+  - 例如 `RedFrame::serialize({uint8_t{50}, uint16_t{1000}})` 生成“红灯 50%，亮 1000 毫秒”。
+  - 返回的是字节数组。例子里依次是 `01 32 E8 03`，可以用 `bytes[0]` 等读取单个字节。
+  - 只生成数据，不会自动发送；发送要自己调用串口等接口。
+- `static constexpr std::expected<DataTuple, Error> deserialize(std::span<const uint8_t> input) noexcept`
+  - 反序列化，即手上已经有完整的一条消息时，用它取出数据，例如 `auto result = RedFrame::deserialize(bytes);`。
+  - 只传这一条消息的字节，不能多也不能少。上面的红灯消息必须传 4 字节。
+  - 先用 `if (result)` 判断是否成功。
+  - 成功后用 `auto [duty, duration_ms] = *result;` 取出占空比和时长。
+  - 失败时用 `result.error()` 查看错误，此时不要取数据。
+  - 像示例那样用 `parser.feed()` 接收时，不需要自己调用它。
 
-### 验证
+### `FrameParser<Frames...>`
 
-本地测试位于 `tests/frame_codec/parser`，沿用仓库对 `tests/` 的 Git 忽略规则：
+接收数据，认出是哪一种帧，再执行对应的处理代码。示例中的 `LedParser` 就是接收红、绿、蓝三种帧的工具。
 
-```powershell
-cmake -S tests/frame_codec/parser -B build/frame-parser-tests -G "MinGW Makefiles"
-cmake --build build/frame-parser-tests
-ctest --test-dir build/frame-parser-tests --output-on-failure
-```
+- `LedParser parser({...});`（示例中的创建写法）
+  - 大括号里依次写红灯、绿灯、蓝灯收到消息后要做的事。
+  - 顺序要和 `FrameParser<RedFrame, GreenFrame, BlueFrame>` 一致。
+  - 只创建一次，后面收到的数据都交给这个 `parser`。
+  - 不处理某种消息时，对应位置填 `nullptr`。
+- `constexpr bool feed(uint8_t byte)`
+  - 每次传入一个收到的字节。
+  - 凑齐并认出一条消息时，执行对应的处理代码，并返回 `true`；否则返回 `false`。
+- `constexpr std::size_t feed(std::span<const uint8_t> bytes)`
+  - 一次传入一批收到的数据，返回这次认出了几条消息。
+  - 可以直接传示例里的 `bytes`，即 `parser.feed(bytes);`。
+  - 如果手上是接收数组 `buffer` 和收到的字节数 `length`，就写 `parser.feed(std::span<const uint8_t>{buffer, length});`。
+  - 这里只使用数组里实际收到的那部分，不要把整个数组的容量当成 `length`。
+- `constexpr void reset() noexcept`
+  - 扔掉之前收到但还没处理的数据，接下来从头接收。
+  - 之前写好的红、绿、蓝灯处理代码不用重写。
 
-覆盖逐字节和任意位置分片、连续多帧、超过缓冲容量的数据块、噪声和各类校验错误后的恢复、载荷内帧头、reset()、空回调、随机分块、单字节帧、CRC32 反馈帧及编译期配置检查。
+使用时还要注意：
 
-## Field：普通数值或固定长度字节数组字段
+- 模块负责调用对应的回调；要保存占空比和时长，需要像示例一样在回调里赋值。
+- 不要留着 `data` 等以后再用，需要的值当场取出来保存。
+- 不要在多个任务里同时使用同一个 `parser`。
+- 不要在灯的处理代码里再次调用它的 `feed()`。
 
-### 构造与参数
+下面介绍可以放进 `Frame` 的各个元素。示例写法省略了 `frame::`，实际写进代码时要像开头的例子一样加上。
 
-模板形式为 `Field<T, Order = std::endian::little>`。
+### `Header<Bytes...>`
 
-| 参数 | 含义与约束 |
-| --- | --- |
-| `T` | 1、2、4、8 字节整数或 `float`，也支持 `std::array<Byte, N>`，其中 `Byte` 为 `std::uint8_t`、`char` 或 `std::byte`。不允许 bool、const、volatile；float 必须为 IEEE 754 binary32 |
-| `Order` | 数值字段字节序，可选小端、大端或本机字节序，默认小端；字节数组始终按元素原顺序复制，不受此参数影响 |
+指定帧头。例子里通过帧头判断要控制红灯、绿灯还是蓝灯。
 
-例如 `Field<std::int16_t, std::endian::big>` 表示两字节有符号大端字段，`Field<float>` 表示四字节小端浮点字段。每个 Field 对应 tuple 中的一个值，重复字段类型不会合并。
+- `Header<0x01>`
+  - 消息以 `01` 开头。示例用 `01` 表示红灯、`02` 表示绿灯、`03` 表示蓝灯。
+- `Header<0xAA, 0x01>`
+  - 也可以指定多个开头字节，这里是 `AA 01`。
+  - 接收多种消息时，开头不能相同，也不能一个是另一个的开头。
+  - 例如 `Header<0xAA>` 和 `Header<0xAA, 0x01>` 不能一起用。
 
-固定长度字节数组作为 tuple 中的一个整体值，不会展开成多个标量字段，也不进行堆分配。例如，一个 32 字节名称可以声明为 `Field<std::array<char, 32>>`。
+### `Field<T, Order = std::endian::little>`
 
-数组按原始字节传输，保留高位字节和内嵌零字节；不添加字符串终止符、不自动截断或补零，这些操作由调用方负责。长度 `N` 可以为零，此时字段仍对应一个数组值，但不占用线上字节。数组仅支持上述字节元素类型，不支持数值数组、原生 C 数组、`std::span` 或变长容器。
+指定帧里要带什么数据。例子里写了两个 `Field`，分别放占空比和亮灯时长。
 
-```cpp
-using RawBytes = std::array<std::uint8_t, 4>;
-using NamedPacket = frame::Frame<frame::Header<0xAA>, frame::Field<RawBytes>, frame::Field<float>>;
-constexpr auto bytes = NamedPacket::serialize(std::tuple{RawBytes{0xA5, 0x00, 0x80, 0xFF}, 1.0f});
-static_assert(bytes == std::array<std::uint8_t, 9>{0xAA, 0xA5, 0x00, 0x80, 0xFF, 0, 0, 0x80, 0x3F});
-static_assert(std::get<0>(*NamedPacket::deserialize(bytes)) == RawBytes{0xA5, 0x00, 0x80, 0xFF});
-```
+每写一个 `Field`，发送时就多填一个值，接收时也多取一个值，顺序按定义来。
 
-### 方法
+- `Field<uint8_t>`
+  - 放一个 0～255 的整数。示例用它放占空比。
+  - “只能填 0～100”需要自己判断，这个模块不会帮你限制。
+- `Field<uint16_t>`
+  - 放一个 0～65535 的整数。示例用它放亮灯时长，最多 65535 毫秒。
+  - 更大的数可以用 `uint32_t`，需要负数可以用 `int16_t` 等。
+- `Field<float>`
+  - 放一个带小数的数，例如 `12.5f`。
+- `Field<std::array<uint8_t, N>>`
+  - 放固定 `N` 个字节，发送时必须提供这么大的数组。
+- `Field<uint16_t, std::endian::big>`
+  - 和对方约定要按“大端”收发多字节数字时这样写；没填第二项时按“小端”收发。
+  - 示例中的时长占两个字节，1000 默认按 `E8 03` 收发，改成大端后按 `03 E8` 收发。
 
-| 方法 | 含义 |
-| --- | --- |
-| `size()` | 数值字段返回 `sizeof(T)`，字节数组返回元素个数 `N` |
-| `serialize(value, output)` | 将数值按目标字节序写入自身切片，或按原顺序复制全部数组字节，返回 void |
-| `deserialize(input)` | 从自身切片解码并返回 T |
+### `Footer<Bytes...>`
 
-## BitField：紧密打包的无符号整数位字段
+指定帧尾。开头的亮灯例子没有帧尾，如果和对方约定每帧最后要带固定字节，就把它写在 `Frame` 的最后面。
 
-模板形式为 `BitField<Bits, T, Order = BitOrder::LsbFirst>`，可直接加入 Frame，不需要分组容器。
+- `Footer<0x0D, 0x0A>`
+  - 每帧以 `0D 0A` 结尾，发送时自动加上，接收时自动检查。
+  - 不需要帧尾时，不写这一项。
 
-| 参数 | 含义与约束 |
-| --- | --- |
-| `Bits` | 线上位宽，要求 `1 <= Bits <= sizeof(T) * 8` |
-| `T` | 不带 const 或 volatile 的 1、2、4、8 字节无符号整数，不支持 bool、有符号整数、float 或数组 |
-| `Order` | 位打包规则，支持 LsbFirst、MsbFirst，默认 LsbFirst |
+### `BitField<Bits, T, Order = BitOrder::LsbFirst>`
 
-每个 BitField 对应 tuple 中的一个 T。编码只写数值的低 Bits 位，不限幅、不报范围错误；例如 2048 编码为 11 位时得到零，业务范围检查由调用方负责。解码零扩展到 T。
+需要按“几位”而不是“几个字节”放数据时，用它代替 `Field`。例如以后要在亮灯消息里加一个开关状态，只需要放 0 或 1，可以用 `BitField<1, uint8_t>`。
 
-连续 BitField 从前一个字段结束位置继续填入，允许跨字节。十六个连续 11 位字段共占 22 字节。遇到 Field（包括零长度数组）、Header、Footer、Length、Crc、Begin、End 或帧结束时，向上补齐到完整字节；编码时未使用位写零，解码时忽略。
+发送和接收的写法与 `Field` 一样：发送时填一个值，接收时取一个值。
 
-| 位序 | 字节内填入方向 | 单个字段取位方向 |
-| --- | --- | --- |
-| `BitOrder::LsbFirst` | bit 0 → bit 7 | 数值低位 → 高位 |
-| `BitOrder::MsbFirst` | bit 7 → bit 0 | 数值高位 → 低位 |
+- `BitField<1, uint8_t>`
+  - 放一个 0 或 1，例如灯的开关状态。
+- `BitField<3, uint8_t>`
+  - 放一个 0～7 的数。不要填超过范围的数，模块不会报错，也不会自动改成最大值。
+- `BitField<4, uint8_t>, BitField<4, uint8_t>`
+  - 连着写两个各占 4 位的数，总共只占一个字节；发送和接收时仍是两个值。
+- `BitField<4, uint8_t, BitOrder::MsbFirst>`
+  - 对方要求从一个字节的高位开始放数据时这样写。
+  - 默认用 `BitOrder::LsbFirst`，从低位开始。
+  - 连续的一组保持同一种写法；要换顺序，先凑满整个字节。
 
-位序描述字节数组内的打包方式，与 Field 的字节序、外设发送位的顺序分开处理。字段声明顺序不变。在同一未填满的字节内切换位序会在编译期报错；已经到达字节边界时允许切换。
+### `RegionTag<Id> / Begin<Region> / End<Region>`
 
-```cpp
-using Packed = frame::Frame<
-    frame::Header<0xAA>,
-    frame::BitField<11, std::uint16_t>,
-    frame::BitField<5, std::uint8_t>,
-    frame::Field<std::uint16_t, std::endian::big>,
-    frame::Footer<0x55>>;
+需要给一段数据填写长度或加校验时，先用这三个写法圈出范围。例如只处理占空比和时长，不包括帧头，就把这两个 `Field` 圈起来。
 
-constexpr Packed::DataTuple packed_data{0x345, 0x12, 0x1234};
-constexpr auto packed_bytes = Packed::serialize(packed_data);
-static_assert(packed_bytes == std::array<std::uint8_t, 6>{0xAA, 0x45, 0x93, 0x12, 0x34, 0x55});
-static_assert(*Packed::deserialize(packed_bytes) == packed_data);
+这些标记本身不占字节，发送时也不用给它们填值。
 
-using HighBits = frame::Frame<
-    frame::BitField<11, std::uint16_t, frame::BitOrder::MsbFirst>,
-    frame::BitField<5, std::uint8_t, frame::BitOrder::MsbFirst>>;
-static_assert(HighBits::serialize({0x345, 0x12}) == std::array<std::uint8_t, 2>{0x68, 0xB2});
-```
+- `using Payload = frame::RegionTag<0>;`
+  - 把一段数据命名为 `Payload`。有多段时分别用不同的编号，例如 `RegionTag<1>`。
+- `frame::Begin<Payload>`
+  - 写在要圈起来的数据前面。
+- `frame::End<Payload>`
+  - 写在这段数据后面，和 `Begin<Payload>` 配对。同一个名字在一条消息里只圈一次。
 
-单个 11 位字段后接 Field<uint16_t> 时，前者占两字节（包含五位填充），后者从下一完整字节开始。Begin、End 保证 Length、CRC 的区域按字节对齐，区域末尾补齐的字节也计入区域长度；CRC 校验实际线路字节，包括填充位。
-
-### 元素级方法
-
-通常使用 Frame 即可。直接操作单个 BitField 时，BitOffset 为自身切片首字节内已经使用的位数（0～7），由上述位序解释；调用方须提供足够的有效切片，单个元素不会清零相邻字段或填充位。
-
-| 方法 | 含义 |
-| --- | --- |
-| `bit_size()` | 返回 Bits，不含边界填充 |
-| `byte_size<BitOffset = 0>()` | 返回覆盖字节数，等于 `(BitOffset + Bits + 7) / 8`，可能与相邻字段共享字节 |
-| `serialize<BitOffset = 0>(value, output)` | 写入自身位，output 为固定长度 `std::span<std::uint8_t, byte_size<BitOffset>()>` |
-| `deserialize<BitOffset = 0>(input)` | 从对应固定长度只读 span 解码并返回 T |
-
-BitField 不提供可相加的独立字节 size()，整帧长度由 Layout 计算。
-
-## Header / Footer：固定帧头和帧尾
-
-### 构造与参数
-
-模板形式分别为 `Header<Bytes...>` 和 `Footer<Bytes...>`。`Bytes...` 为一个或多个 uint8 常量，例如 `Header<0xAA, 0x55>`、`Footer<0x0D, 0x0A>`。
-
-通常分别放在元素列表开头和末尾。没有帧头或帧尾时直接省略相应元素，不使用空字节序列占位。它们不占 tuple 位置。
-
-### 方法
-
-| 方法 | 含义 |
-| --- | --- |
-| `size()` | 返回固定字节的数量 |
-| `serialize(output)` | 将固定字节写入自身切片 |
-| `deserialize(input)` | 所有字节均匹配时返回 true，否则返回 false |
-
-## RegionTag / Begin / End：区域定义
-
-### 构造与参数
-
-| 类型 | 用法 |
-| --- | --- |
-| `RegionTag<Id>` | 定义 region tag，不同区域使用不同 Id，例如 `using Payload = frame::RegionTag<0>` |
-| `Begin<RegionTag>` | 标记该区域的起点 |
-| `End<RegionTag>` | 标记该区域的终点，区域结束于此标记之前 |
-
-RegionTag 是类型标识，不直接加入 Frame 元素列表。Begin、End 占用零字节，不占 tuple 位置，不提供运行时编解码方法。
-
-### 注意事项
-
-同一个 region tag 在一帧中只能定义一组 Begin、End，区域可以为空或嵌套，但不能交叉闭合。例如 `Begin<A>, Begin<B>, End<B>, End<A>` 合法，`Begin<A>, Begin<B>, End<A>, End<B>` 不合法。
-
-长度和 CRC 可以引用同一个区域，也可以引用不同区域。它们引用的区域必须在同一个 Frame 中声明，字段自身可以位于目标区域之前或之后，但 CRC 还须满足下文的覆盖规则。
-
-## Length / LengthOf：区域长度
-
-### 构造与参数
-
-模板形式为 `Length<T, Meaning, Order = std::endian::little>`。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `T` | 保存长度的无符号整数类型，不允许 bool、const、volatile；必须能表示完整区域长度 |
-| `Meaning` | 使用 `LengthOf<RegionTag>` 指定长度所属区域；LengthOf 不直接作为帧元素 |
-| `Order` | 长度值的字节序，默认小端 |
-
-### 使用示例
+例如，下面把占空比和亮灯时长圈成 `Payload`，共 3 字节：
 
 ```cpp
-using WholeRegion = frame::RegionTag<10>;
-using SelfLengthPacket = frame::Frame<
-    frame::Begin<WholeRegion>,
-    frame::Header<0xAA>,
-    frame::Length<std::uint8_t, frame::LengthOf<WholeRegion>>,
-    frame::Field<std::uint16_t>,
-    frame::End<WholeRegion>>;
+using Payload = frame::RegionTag<0>;
+using CheckedLedFrame = frame::Frame<
+    frame::Header<0x01>,
+    frame::Length<uint8_t, frame::LengthOf<Payload>>,
+    frame::Begin<Payload>,
+    frame::Field<uint8_t>,  // 占空比
+    frame::Field<uint16_t>, // 亮灯时长
+    frame::End<Payload>,
+    frame::Crc<Payload>,
+    frame::Footer<0x0D, 0x0A>>;
 
-constexpr auto self_length_bytes = SelfLengthPacket::serialize(std::tuple{std::uint16_t{0x1234}});
-static_assert(self_length_bytes == std::array<std::uint8_t, 4>{0xAA, 4, 0x34, 0x12});
+// 仍然只填占空比和时长，长度、校验、帧头、帧尾都不用填。
+auto bytes = CheckedLedFrame::serialize({uint8_t{50}, uint16_t{1000}});
 ```
 
-该区域长度为四字节，包含帧头、长度字段自身及普通字段。区域内的所有线路字节都计入长度，包括嵌套区域、帧尾和 CRC；Begin、End 不占字节。长度是格式确定的常量，接收到不同的长度值会验证失败，不会据此改变帧大小。
+### `Length<T, Meaning, Order = std::endian::little> / LengthOf<Region>`
 
-### 方法
+对方要求帧里带上数据长度时，用它自动填写。上面的例子把占空比和时长圈成了 `Payload`，长度就是 3 字节。
 
-| 方法 | 含义 |
-| --- | --- |
-| `size()` | 返回长度字段宽度 `sizeof(T)` |
-| `serialize(output, region_size)` | 将区域字节数写入自身切片 |
-| `deserialize(input, region_size)` | 读取长度值，与预期区域字节数比较，返回 bool |
+发送时不用自己填长度，接收时模块会检查长度是否等于约定的值。
 
-## Crc：区域校验
+- `Length<uint8_t, LengthOf<Payload>>`
+  - 用一个字节保存 `Payload` 有多少字节，上面的例子会自动填 3。
+  - 长度超过 255 时改用 `uint16_t` 等更大的类型。
+- `LengthOf<Payload>`
+  - 指定要数哪一段。放在 `Length` 的第二项，不要单独放进 `Frame`。
+- `Length<uint16_t, LengthOf<Payload>, std::endian::big>`
+  - 用两个字节保存长度，并按大端收发。不填最后一项时默认小端。
 
-### 构造与参数
+这个模块每种消息的总长度是固定的。加上 `Length` 也不能让同一种消息一会儿带 3 字节数据、一会儿带 5 字节。
 
-模板形式为 `Crc<RegionTag, Type = CrcType::Crc16, Order = std::endian::little>`。
+### `Crc<Region, Type = CrcType::Crc16, Order = std::endian::little>`
 
-| 参数 | 含义与约束 |
-| --- | --- |
-| `RegionTag` | 参与校验的区域标识，须在当前 Frame 内声明 |
-| `Type` | 选择 Crc8、Crc16、Crc32Mpeg2 或 Crc32Mpeg2WordLe，默认 Crc16；字段分别占一、二、四、四字节 |
-| `Order` | 校验值保存到帧中的字节序，默认小端；不改变计算算法 |
+对方要求帧里带校验值时，用它自动填写。先和对方约定校验哪一段、用哪种 CRC，再选择下面的写法。
 
-### 算法参数
+发送时不用自己计算或填写。用 `parser.feed()` 接收时，校验没通过就不会执行对应灯的处理代码。
 
-| 参数 | `CrcType::Crc8` | `CrcType::Crc16` | `CrcType::Crc32Mpeg2` | `CrcType::Crc32Mpeg2WordLe` |
-| --- | --- | --- | --- | --- |
-| 多项式 | `0x07` | `0x1021` | `0x04C11DB7` | `0x04C11DB7` |
-| 初值 | `0x00` | `0xFFFF` | `0xFFFFFFFF` | `0xFFFFFFFF` |
-| 输入反射 / 输出反射 | 均为否 | 均为否 | 均为否 | 均为否 |
-| 最终异或值 | `0x00` | `0x0000` | `0x00000000` | `0x00000000` |
-| 空区域校验值 | `0x00` | `0xFFFF` | `0xFFFFFFFF` | `0xFFFFFFFF` |
-| ASCII `123456789` 的校验值 | `0xF4` | `0x29B1` | `0x0376E6E7` | `0xAFF19057`（末尾补三个零字节） |
+- `Crc<Payload>`
+  - 给 `Begin<Payload>` 到 `End<Payload>` 中间的内容加 CRC16 校验，占两个字节。不用自己计算或填写。
+- `Crc<Payload, CrcType::Crc8>`
+  - 改用 CRC8，占一个字节。
+- `Crc<Payload, CrcType::Crc32Mpeg2>`
+  - 改用 CRC32-MPEG2，占四个字节。不能拿其他 CRC32 算法的结果直接替换。
+- `Crc<Payload, CrcType::Crc32Mpeg2WordLe>`
+  - 使用宇树 IM6014 电机协议对应的 CRC32 写法，占四个字节。
+  - 每组不足四字节时按补零计算，但不会往消息里多塞字节。
+- `Crc<Payload, CrcType::Crc16, std::endian::big>`
+  - 把校验值按大端收发。不填最后一项时默认小端。
 
-`Crc32Mpeg2` 按线路字节顺序计算，支持任意区域长度。它与常见的 CRC32/IEEE 参数不同，不能互换。
+使用时：
 
-`Crc32Mpeg2WordLe` 对完整的四字节分组采用 IM6014 手册的按字参考算法：每四个线路字节组成一个小端 uint32_t，再从该字的 bit 31 开始输入。例如区域字节 `01 02 03 04 05 06 07 08` 的计算顺序为 `04 03 02 01 08 07 06 05`。区域起始偏移及缓冲地址不要求四字节对齐。
+- `CrcType` 就是上面几种校验方式的名字，按和对方约定的方式选。
+- 像例子一样，把 `Crc<Payload>` 放在 `End<Payload>` 后面即可。
+- 圈起来的范围不能包含这个 CRC 自己，也不能包含写在它后面的其他 CRC。
 
-对于不足四字节的末组，本模块约定在区域末尾补零后参与计算。例如 `01 02 03` 视为小端字 `0x00030201`，输入计算的顺序为 `00 03 02 01`。补零仅发生在 CRC 计算中，不写入实际帧，不改变区域长度或后续字段偏移；空区域不添加字，仍返回初值。宇树命令和反馈的校验区域分别为 16 和 20 字节，不涉及补零。
+### `Error`
 
-`Order` 只控制最终 CRC 数值在帧中的保存顺序，不改变上述输入顺序。
+自己调用 `deserialize()` 时，先用 `if (result)` 判断是否成功。失败时才调用 `result.error()`，对照下面的名字查看原因。
 
-例如，下面的格式在偏移 2 处对 20 字节数据进行按字校验，生成 26 字节帧：
+用 `parser.feed()` 时，不需要自己读取这些错误，模块会继续寻找下一条能通过检查的帧。
 
-```cpp
-using FeedbackRegion = frame::RegionTag<22>;
-using CheckedFeedback = frame::Frame<
-    frame::Header<0xFC, 0xEE>,
-    frame::Begin<FeedbackRegion>,
-    frame::Field<std::array<std::uint8_t, 20>>,
-    frame::End<FeedbackRegion>,
-    frame::Crc<FeedbackRegion, frame::CrcType::Crc32Mpeg2WordLe>>;
-
-static_assert(CheckedFeedback::size() == 26);
-```
-
-### 方法
-
-| 方法 | 含义 |
-| --- | --- |
-| `size()` | 返回校验字段宽度 |
-| `serialize(output, region)` | 计算区域 CRC，再按 Order 写入自身切片 |
-| `deserialize(input, region)` | 读取保存值，与重新计算的区域 CRC 比较，返回 bool |
-
-### 覆盖规则与示例
-
-CRC 不能覆盖自身或声明在后的其他 CRC 字段，可以覆盖声明在前的 CRC 字段。所有非 CRC 字段写入后，再按声明顺序生成 CRC；不满足依赖顺序的格式在编译期拒绝。
-
-以下格式先计算数据区域的 CRC8，再计算包含该 CRC8 的外层 CRC16：
-
-```cpp
-using DataRegion = frame::RegionTag<20>;
-using CheckedRegion = frame::RegionTag<21>;
-using NestedCrcPacket = frame::Frame<
-    frame::Begin<CheckedRegion>,
-    frame::Header<0xAA>,
-    frame::Begin<DataRegion>,
-    frame::Field<std::uint16_t>,
-    frame::End<DataRegion>,
-    frame::Crc<DataRegion, frame::CrcType::Crc8>,
-    frame::End<CheckedRegion>,
-    frame::Crc<CheckedRegion>>;
-
-constexpr auto nested_bytes = NestedCrcPacket::serialize(std::tuple{std::uint16_t{42}});
-static_assert(NestedCrcPacket::size() == 6);
-static_assert(std::get<0>(*NestedCrcPacket::deserialize(nested_bytes)) == 42);
-```
-
-CRC 字段也可以位于它所校验的数据区域之前，只要不覆盖尚未生成的其他 CRC。
-
-## 错误处理与编译期检查
-
-### 解析错误
-
-| 错误值 | 含义 |
-| --- | --- |
-| `Error::BufferSizeMismatch` | 输入字节数与完整帧长度不一致 |
-| `Error::HeaderMismatch` | 固定帧头不匹配 |
-| `Error::FooterMismatch` | 固定帧尾不匹配 |
-| `Error::LengthMismatch` | 长度字段与指定区域的预期长度不一致 |
-| `Error::CrcMismatch` | CRC 保存值与实际计算值不一致 |
-
-Frame 先检查输入大小，再解码普通字段到局部 tuple，最后按声明顺序验证自动字段。多个字段同时出错时返回最先遇到的自动字段错误；任何验证失败都不返回部分解析值。单独调用普通 Field 的 deserialize 只进行数值解码，不执行业务取值范围检查。
-
-### 编译期检查
-
-格式实例化时自动检查区域唯一配对和嵌套闭合、Length 与 Crc 的 region tag 引用、长度字段容量、CRC 覆盖依赖及未对齐的位序切换。BitField 还检查类型、位宽和位序。查询元素偏移时拒绝越界索引，查询区域时拒绝未声明的 region tag。
-
-元素级方法接收自身固定长度切片，直接调用时须提供有效切片及正确的区域参数。Frame 负责准备切片和调度，Layout 负责配置合法性，元素不重复检查这些前提。通常使用 Frame 的整帧接口即可。
-
-## 内部布局接口
-
-`frame::detail::Layout<Elements...>` 为 Frame 提供以下编译期查询，不属于模块使用者的稳定公开 API：
-
-| 方法 | 含义 |
-| --- | --- |
-| `get_frame_size()` | 返回整帧字节数 |
-| `get_element_offset<Index>()` | 返回从零开始的声明索引所对应元素的字节偏移；零字节边界标记也占用索引 |
-| `get_element_bit_offset<Index>()` | 返回元素首字节内已使用的位数，普通字节元素为零 |
-| `get_element_size<Index>()` | 返回元素覆盖的字节数，位字段可能与相邻字段共享字节，不能简单求和得到帧长 |
-| `get_region_offset<RegionTag>()` | 返回区域起始字节偏移 |
-| `get_region_size<RegionTag>()` | 返回区域字节数，空区域为零 |
-
-`check_region_pairs()`、`check_region_references()`、`check_length_capacity()` 和 `check_crc_coverage()` 均为私有方法，通过 static_assert 自动执行，无需手动调用。
-
-## CRC32 验证
-
-本地测试位于 `tests/frame_codec/crc32`（`tests/` 沿用仓库的 Git 忽略规则）。Windows MinGW 环境可执行：
-
-```powershell
-cmake -S tests/frame_codec/crc32 -B build/crc32-make-tests -G "MinGW Makefiles"
-cmake --build build/crc32-make-tests
-ctest --test-dir build/crc32-make-tests --output-on-failure
-```
-
-覆盖标准校验向量、空区域、独立多项式及手册参考算法、未对齐输入、CRC 保存字节序、20/26 字节帧的不同覆盖范围、逐字节损坏、嵌套 CRC 及 CRC8/CRC16 回归；另验证非整字区域末尾补零的结果，并在编译期验证一、二、三、五、六、七、九字节区域的编解码及实际帧长度。
-
-## BitField 验证
-
-本地测试位于 `tests/frame_codec/bit_field`，沿用仓库对 `tests/` 的 Git 忽略规则：
-
-```powershell
-cmake -S tests/frame_codec/bit_field -B build/frame-bit-field-tests -G "MinGW Makefiles"
-cmake --build build/frame-bit-field-tests
-ctest --test-dir build/frame-bit-field-tests --output-on-failure
-```
-
-覆盖两种位序的已知字节、11 位全部取值在八种起始偏移下的共享位保护、16 通道共 22 字节、未对齐 64 位字段、字节字段混排、区域和填充、CRC、Parser 分片与恢复，以及非法配置的编译失败检查。测试中也包含 constexpr 编解码和纯 Field 帧字节回归。
+- `Error::BufferSizeMismatch`
+  - 传入的字节数不对，多了或少了。
+- `Error::HeaderMismatch`
+  - 消息开头和约定的不一样。
+- `Error::FooterMismatch`
+  - 消息结尾和约定的不一样。
+- `Error::LengthMismatch`
+  - 消息里写的长度和实际约定的长度不一样。
+- `Error::CrcMismatch`
+  - 校验没通过。
