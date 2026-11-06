@@ -242,17 +242,10 @@ public:
     [[nodiscard]] std::uint8_t get_warning_flags() const noexcept { return m_warning_flags; }
 
 private:
-    struct FeedbackParser : frame::FrameParser<FeedbackFrame> {
-        using Base = frame::FrameParser<FeedbackFrame>;
-        Im6014Motor& motor;
-
-        explicit FeedbackParser(Im6014Motor& owner) noexcept
-            : Base({[](Base& parser, const DataTuple& data) {
-                (void)static_cast<FeedbackParser&>(parser).motor.on_rx(data);
-            }}), motor(owner) {}
-    };
-
-    FeedbackParser m_parser{*this};
+    using FeedbackParser = frame::FrameParser<FeedbackFrame>;
+    FeedbackParser m_parser{{[](FeedbackParser& parser, const DataTuple& data) {
+        (void)static_cast<Im6014Motor*>(parser.m_callback_context)->on_rx(data);
+    }}, this};
     static constexpr std::uint8_t kInvalidId = 0xFF;
     static constexpr double kTwoPi = 2.0 * std::numbers::pi_v<double>;
 

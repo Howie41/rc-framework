@@ -42,8 +42,13 @@ public:
     /// @brief 回调顺序与帧类型顺序对应；引用仅在回调期间有效，可用 nullptr 跳过。
     using Callbacks = std::tuple<void (*)(FrameParserWithBuffer&, const typename Frames::DataTuple&)...>;
 
+    // 仅在 feed() 未执行时修改配置，回调顺序与 Frames 一致。
+    Callbacks m_callbacks;
+    void* m_callback_context{nullptr}; // 所有回调共享的上下文，不管理其生命周期。
+
     /// @brief 保存回调配置，创建空缓存；不绑定或读取串口。
-    explicit constexpr FrameParserWithBuffer(Callbacks callbacks = {}) noexcept : m_callbacks(callbacks) {}
+    explicit constexpr FrameParserWithBuffer(Callbacks callbacks = {}, void* context = nullptr) noexcept
+        : m_callbacks(callbacks), m_callback_context(context) {}
 
     /// @brief 输入一个字节；成功解析出一帧时返回 true，即使未配置回调。
     constexpr bool feed(std::uint8_t byte) {
@@ -77,7 +82,6 @@ public:
 private:
     std::array<std::uint8_t, BufferSize> m_buffer{}; // 所有帧类型共用的字节缓存，保存半帧及待验证数据。
     std::size_t m_buffered_size{0};                 // 缓存开头尚未消费的有效字节数。
-    Callbacks m_callbacks;                         // 按 Frames 声明顺序保存的回调，空指针表示仅解析计数。
 
     // 删除已消费的前缀，将剩余字节移到缓冲区开头；前缀长度由解析流程保证有效。
     constexpr void discard_prefix(std::size_t count) noexcept {
