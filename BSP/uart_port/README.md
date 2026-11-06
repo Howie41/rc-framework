@@ -123,6 +123,37 @@ DMA 自带的 `m_tx_buffer`、`m_rx_buffer` 平时不用自己操作，发送和
 
 这些处理函数在中断里执行，不要延时、长时间等待或做耗时工作。需要任务处理时，优先使用开头的接收缓冲区写法。
 
+### 回调里要用自己保存的数据时
+
+还是上面的灯。如果任务想知道消息是否已经发完，可以准备一份发送状态，让发送完成回调修改它：
+
+```cpp
+#include <atomic>
+
+struct LedSendState {
+    std::atomic<bool> completed{false};
+};
+
+LedSendState led_send_state;
+
+// 在启动串口收发前调用一次。led_uart 使用开头已经创建的串口。
+void configure_led_callbacks() {
+    led_uart.m_callback_context = &led_send_state;
+    led_uart.m_callbacks.on_transmit_complete = [](UartPort& uart) {
+        auto& state = *static_cast<LedSendState*>(uart.m_callback_context);
+        state.completed.store(true);
+    };
+}
+```
+
+这里的 `m_callback_context` 用来记住回调要操作哪份数据：先把 `led_send_state` 的地址存进去，发送完成时再通过它找到这份状态。任务每次发送前把 `completed` 设为 `false`，之后用 `completed.load()` 查看是否发完。状态在任务和中断里都会用到，所以这里用 `std::atomic<bool>` 保存。
+
+- `m_callbacks` 可以直接修改。示例只填发送完成处理，其他事件原来怎么处理就仍然怎么处理。
+- 同一个串口的所有回调共用 `m_callback_context`。如果还要保存别的状态，可以一起放进 `LedSendState`。
+- `static_cast<LedSendState*>` 表示按 `LedSendState` 的类型取回地址。存进去是什么类型，取出来就写什么类型。
+- 没设置地址时是 `nullptr`，不要直接拿来访问数据。串口只记住地址，不会复制这份状态；像例子这样把状态放在函数外，保证回调执行时它还在。
+- 在启动收发前设置好处理代码和地址。回调正在执行时，不要从另一个任务修改它们。
+
 ### UartPortIt<TxBufferSize = 0, RxBufferSize = 0>
 
 需要少量定长数据、使用 IT 收发时选择它。下面是另一种接收写法，不要与开头的 DMA 例子同时绑定 USART3：
@@ -183,10 +214,3 @@ void receive_once() {
   - 需要调用其他 HAL 串口接口时，取出所绑定的句柄。
 
 串口对象要一直保留。`UartPortManager` 和 HAL 转发方法由项目处理，平时不需要直接调用，也不要绕开发送方法手动修改内部缓冲区。
-
-### 回调上下文
-
-`m_callbacks` 和 `m_callback_context` 均为公开成员。所有回调都可通过传入的
-`UartPort&` 访问 `port.m_callback_context`，再转换为所属对象指针。
-上下文默认为 `nullptr`，串口不管理其生命周期。须在启动收发前配置，
-不可与回调执行并发修改，且上下文对象在回调使用期间须持续有效。

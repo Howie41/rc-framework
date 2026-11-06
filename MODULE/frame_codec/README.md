@@ -131,10 +131,6 @@ void example() {
   - 顺序要和 `FrameParser<RedFrame, GreenFrame, BlueFrame>` 一致。
   - 只创建一次，后面收到的数据都交给这个 `parser`。
   - 不处理某种消息时，对应位置填 `nullptr`。
-- 可使用 `LedParser parser(callbacks, &owner);` 传入所属对象地址，所有回调都能通过 `parser.m_callback_context` 取回对象。
-  - `m_callback_context` 是公开的非拥有型 `void*`，默认为 `nullptr`；取回时使用 `static_cast<Owner*>(parser.m_callback_context)`。
-  - `m_callbacks` 同样公开；只在没有执行 `feed()` 时修改回调和上下文，且上下文对象须持续有效。
-  - `reset()` 仅清空解析缓存，保留回调和上下文；无需为保存所属对象而派生解析器。
 - `constexpr bool feed(uint8_t byte)`
   - 每次传入一个收到的字节。
   - 凑齐并认出一条消息时，执行对应的处理代码，并返回 `true`；否则返回 `false`。
@@ -153,6 +149,39 @@ void example() {
 - 不要留着 `data` 等以后再用，需要的值当场取出来保存。
 - 不要在多个任务里同时使用同一个 `parser`。
 - 不要在灯的处理代码里再次调用它的 `feed()`。
+
+### 回调里要把数据存到自己的对象时
+
+开头把各灯的占空比和时长分别放在函数外。如果想把红灯的数据放在同一个对象里，可以这样写。这里沿用开头的 `LedParser` 和三种帧格式：
+
+```cpp
+struct LedSettings {
+    uint8_t red_duty{};
+    uint16_t red_duration_ms{};
+};
+
+LedSettings led_settings;
+LedParser settings_parser({
+    [](LedParser& parser, const RedFrame::DataTuple& data) {
+        auto& settings = *static_cast<LedSettings*>(parser.m_callback_context);
+        auto [duty, duration_ms] = data;
+        if (duty <= 100) {
+            settings.red_duty = duty;
+            settings.red_duration_ms = duration_ms;
+        }
+    },
+    nullptr, // 这个例子只保存红灯数据，不处理绿灯。
+    nullptr  // 不处理蓝灯。
+}, &led_settings);
+```
+
+创建 `settings_parser` 时，最后的 `&led_settings` 把这份数据的地址交给它。收到红灯帧后，回调从 `parser.m_callback_context` 取回地址，再把占空比和时长写进去。后续收到的字节交给 `settings_parser.feed(bytes)`，点灯代码读取 `led_settings` 即可。
+
+- `m_callback_context` 就是保存这个地址的地方，同一个解析器的所有回调都能用它。存进去的是 `LedSettings` 的地址，取出来就写 `static_cast<LedSettings*>`。
+- 不需要这份额外数据时，仍然可以像开头那样只传回调，地址默认为 `nullptr`；没有设置地址就不要拿它访问数据。
+- 解析器只记住地址，不会复制 `led_settings`。这份数据要一直保留，至少在回调还会使用它时不能销毁。
+- `m_callbacks` 和 `m_callback_context` 都可以直接修改；先等当前的 `feed()` 执行完，再改处理代码或地址。
+- `reset()` 只扔掉还没处理完的字节，不会清除处理代码、保存的地址或 `led_settings` 中的数据。
 
 下面介绍可以放进 `Frame` 的各个元素。示例写法省略了 `frame::`，实际写进代码时要像开头的例子一样加上。
 
