@@ -50,7 +50,7 @@ void receive_led_task() {
     std::array<uint8_t, 64> buffer{};
     while (true) {
         auto length = led_uart.block_for_received_chunk(buffer);
-        parser.feed(std::span<const uint8_t>{buffer.data(), length});
+        parser.feed_and_parse(std::span<const uint8_t>{buffer.data(), length});
     }
 }
 

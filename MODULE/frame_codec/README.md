@@ -93,11 +93,11 @@ void example() {
     auto bytes = RedFrame::serialize({uint8_t{50}, uint16_t{1000}});
 
     // 接收这个帧：执行红灯回调，保存占空比 50 和时长 1000；这里不会直接点亮灯。
-    parser.feed(bytes);
+    parser.feed_and_parse(bytes);
 }
 ```
 
-实际接收时，把串口每次收到的数据传给同一个 `parser` 的 `feed()` 方法。没能一次收完也没关系，它会在收齐后再执行对应灯的处理代码。
+实际接收时，把串口每次收到的数据传给同一个 `parser` 的 `feed_and_parse()` 方法。没能一次收完也没关系，它会在收齐后再执行对应灯的处理代码。
 
 ### `Frame<Elements...>`
 
@@ -120,7 +120,7 @@ void example() {
   - 先用 `if (result)` 判断是否成功。
   - 成功后用 `auto [duty, duration_ms] = *result;` 取出占空比和时长。
   - 失败时用 `result.error()` 查看错误，此时不要取数据。
-  - 像示例那样用 `parser.feed()` 接收时，不需要自己调用它。
+  - 像示例那样用 `parser.feed_and_parse()` 接收时，不需要自己调用它。
 
 ### `FrameParser<Frames...>`
 
@@ -131,13 +131,13 @@ void example() {
   - 顺序要和 `FrameParser<RedFrame, GreenFrame, BlueFrame>` 一致。
   - 只创建一次，后面收到的数据都交给这个 `parser`。
   - 不处理某种消息时，对应位置填 `nullptr`。
-- `constexpr bool feed(uint8_t byte)`
+- `constexpr bool feed_and_parse(uint8_t byte)`
   - 每次传入一个收到的字节。
   - 凑齐并认出一条消息时，执行对应的处理代码，并返回 `true`；否则返回 `false`。
-- `constexpr std::size_t feed(std::span<const uint8_t> bytes)`
+- `constexpr std::size_t feed_and_parse(std::span<const uint8_t> bytes)`
   - 一次传入一批收到的数据，返回这次认出了几条消息。
-  - 可以直接传示例里的 `bytes`，即 `parser.feed(bytes);`。
-  - 如果手上是接收数组 `buffer` 和收到的字节数 `length`，就写 `parser.feed(std::span<const uint8_t>{buffer, length});`。
+  - 可以直接传示例里的 `bytes`，即 `parser.feed_and_parse(bytes);`。
+  - 如果手上是接收数组 `buffer` 和收到的字节数 `length`，就写 `parser.feed_and_parse(std::span<const uint8_t>{buffer, length});`。
   - 这里只使用数组里实际收到的那部分，不要把整个数组的容量当成 `length`。
 - `constexpr void reset() noexcept`
   - 扔掉之前收到但还没处理的数据，接下来从头接收。
@@ -148,7 +148,7 @@ void example() {
 - 模块负责调用对应的回调；要保存占空比和时长，需要像示例一样在回调里赋值。
 - 不要留着 `data` 等以后再用，需要的值当场取出来保存。
 - 不要在多个任务里同时使用同一个 `parser`。
-- 不要在灯的处理代码里再次调用它的 `feed()`。
+- 不要在灯的处理代码里再次调用它的 `feed_and_parse()`。
 
 下面介绍可以放进 `Frame` 的各个元素。示例写法省略了 `frame::`，实际写进代码时要像开头的例子一样加上。
 
@@ -259,7 +259,7 @@ auto bytes = CheckedLedFrame::serialize({uint8_t{50}, uint16_t{1000}});
 
 对方要求帧里带校验值时，用它自动填写。先和对方约定校验哪一段、用哪种 CRC，再选择下面的写法。
 
-发送时不用自己计算或填写。用 `parser.feed()` 接收时，校验没通过就不会执行对应灯的处理代码。
+发送时不用自己计算或填写。用 `parser.feed_and_parse()` 接收时，校验没通过就不会执行对应灯的处理代码。
 
 - `Crc<Payload>`
   - 给 `Begin<Payload>` 到 `End<Payload>` 中间的内容加 CRC16 校验，占两个字节。不用自己计算或填写。
@@ -283,7 +283,7 @@ auto bytes = CheckedLedFrame::serialize({uint8_t{50}, uint16_t{1000}});
 
 自己调用 `deserialize()` 时，先用 `if (result)` 判断是否成功。失败时才调用 `result.error()`，对照下面的名字查看原因。
 
-用 `parser.feed()` 时，不需要自己读取这些错误，模块会继续寻找下一条能通过检查的帧。
+用 `parser.feed_and_parse()` 时，不需要自己读取这些错误，模块会继续寻找下一条能通过检查的帧。
 
 - `Error::BufferSizeMismatch`
   - 传入的字节数不对，多了或少了。

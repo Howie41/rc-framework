@@ -184,7 +184,7 @@ public:
 
     /// @brief 拼接原始回复字节，解析并校验 IM6014 反馈帧。
     void on_rx(std::span<const std::uint8_t> bytes) override {
-        m_parser.feed(bytes);
+        m_parser.feed_and_parse(bytes);
     }
 
     /// @brief 接收已校验的反馈数据，不重复校验 CRC；停机和故障反馈也正常保存。
