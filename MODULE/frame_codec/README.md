@@ -131,6 +131,10 @@ void example() {
   - 顺序要和 `FrameParser<RedFrame, GreenFrame, BlueFrame>` 一致。
   - 只创建一次，后面收到的数据都交给这个 `parser`。
   - 不处理某种消息时，对应位置填 `nullptr`。
+- 可使用 `LedParser parser(callbacks, &owner);` 传入所属对象地址，所有回调都能通过 `parser.m_callback_context` 取回对象。
+  - `m_callback_context` 是公开的非拥有型 `void*`，默认为 `nullptr`；取回时使用 `static_cast<Owner*>(parser.m_callback_context)`。
+  - `m_callbacks` 同样公开；只在没有执行 `feed()` 时修改回调和上下文，且上下文对象须持续有效。
+  - `reset()` 仅清空解析缓存，保留回调和上下文；无需为保存所属对象而派生解析器。
 - `constexpr bool feed(uint8_t byte)`
   - 每次传入一个收到的字节。
   - 凑齐并认出一条消息时，执行对应的处理代码，并返回 `true`；否则返回 `false`。

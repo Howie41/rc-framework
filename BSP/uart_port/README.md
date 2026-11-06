@@ -183,3 +183,10 @@ void receive_once() {
   - 需要调用其他 HAL 串口接口时，取出所绑定的句柄。
 
 串口对象要一直保留。`UartPortManager` 和 HAL 转发方法由项目处理，平时不需要直接调用，也不要绕开发送方法手动修改内部缓冲区。
+
+### 回调上下文
+
+`m_callbacks` 和 `m_callback_context` 均为公开成员。所有回调都可通过传入的
+`UartPort&` 访问 `port.m_callback_context`，再转换为所属对象指针。
+上下文默认为 `nullptr`，串口不管理其生命周期。须在启动收发前配置，
+不可与回调执行并发修改，且上下文对象在回调使用期间须持续有效。

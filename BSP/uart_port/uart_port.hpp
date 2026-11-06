@@ -61,8 +61,13 @@ public:
 
 protected:
     UART_HandleTypeDef& m_uart_handle;
-    Callbacks m_callbacks;
 
+public:
+    // 在启动收发前配置，不可与回调执行并发修改。
+    Callbacks m_callbacks;
+    void* m_callback_context{nullptr}; // 所有回调共享的上下文，不管理其生命周期。
+
+protected:
     AtomicLock m_tx_lock;
     std::atomic<std::uint32_t> m_tx_complete_count{0};
     std::atomic<std::uint32_t> m_error_count{0};
