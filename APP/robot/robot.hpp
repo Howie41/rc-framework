@@ -22,7 +22,7 @@ inline CanBus can3_bus{hfdcan3};
 
 inline auto can_communication_entry{([] {
     while (true) {
-        (void) robot::can1_bus.heartbeat();
+        (void) robot::can1_bus.periodic();
         rtos::delay(1);
     }
 })};

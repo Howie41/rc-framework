@@ -19,7 +19,7 @@ rtos::Task<"debug_task", [] {
     RUNTIME_ASSERT(robot::uart1_debug_port.start_receive_to_idle_dma() == HAL_OK);
 
     while (true) {
-        PidViewer::heartbeat(rtos::now_ms());
+        PidViewer::periodic(rtos::now_ms());
         rtos::delay(1);
     }
 }, 4096, rtos::TaskPriority::BelowNormal> debug_task;

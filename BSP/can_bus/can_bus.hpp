@@ -205,7 +205,7 @@ public:
      * @return 初始化后所有设备处理成功返回 true；无设备时返回 true。
      * @note 某设备失败仍继续处理其他设备，不缓存失败帧，部分已提交帧不能撤回。
      */
-    [[nodiscard]] bool heartbeat() {
+    [[nodiscard]] bool periodic() {
         if (!m_initialized) return false;
         bool success = true;
         for (auto* device : m_devices) {

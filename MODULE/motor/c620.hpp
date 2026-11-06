@@ -113,7 +113,7 @@ public:
         m_output_command.current_ma = std::clamp(m_output_command.current_ma, -max_output, max_output);
     }
 
-    /** @brief 允许输出；实际控制帧由 C620 在总线 heartbeat 时构建。 */
+    /** @brief 允许输出；实际控制帧由 C620 在总线 periodic 时构建。 */
     void enable() noexcept override { m_enabled = true; }
 
     /** @brief 禁止输出并清空电流目标，停机仍需继续周期发送零电流。 */
