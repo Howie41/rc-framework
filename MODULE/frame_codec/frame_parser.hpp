@@ -15,7 +15,7 @@ namespace frame {
 /// @brief 从连续字节流中提取多种定长帧，每种帧对应一个回调。
 /// @tparam BufferSize 缓冲容量，至少容纳最长帧；较长的数据块会分段处理。
 /// @tparam Frames 帧类型，任意两种帧的固定帧头不得相同或互为前缀。
-/// @note 同一实例由调用方串行访问；回调内可调用 reset()，不可重入 feed()。
+/// @note 同一实例由调用方串行访问；回调内可调用 reset()，不可重入 feed_and_parse()。
 template <std::size_t BufferSize, typename... Frames>
 class FrameParserWithBuffer {
     static_assert(sizeof...(Frames) > 0, "FrameParser 至少需要一种帧类型");
@@ -51,14 +51,14 @@ public:
         : m_callbacks(callbacks), m_callback_context(context) {}
 
     /// @brief 输入一个字节；成功解析出一帧时返回 true，即使未配置回调。
-    constexpr bool feed(std::uint8_t byte) {
-        return feed(std::span<const std::uint8_t>{&byte, 1}) != 0;
+    constexpr bool feed_and_parse(std::uint8_t byte) {
+        return feed_and_parse(std::span<const std::uint8_t>{&byte, 1}) != 0;
     }
 
     /// @brief 输入任意长度的数据块，按顺序交付完整帧并保留未处理完的尾部。
     /// @param bytes 本次收到的数据，仅在调用期间使用，不保存输入视图。
     /// @return 本次成功解析的帧数；空输入返回零，未配置回调时仍正常计数。
-    constexpr std::size_t feed(std::span<const std::uint8_t> bytes) {
+    constexpr std::size_t feed_and_parse(std::span<const std::uint8_t> bytes) {
         std::size_t frame_count = 0;
         while (!bytes.empty()) {
             const auto count = std::min(bytes.size(), BufferSize - m_buffered_size);
@@ -75,7 +75,7 @@ public:
     /// @brief 丢弃所有缓存字节，保留回调配置；回调内调用时也会丢弃已缓存的后续数据。
     constexpr void reset() noexcept { m_buffered_size = 0; }
 
-    /// @brief 返回尚未消费的缓存字节数；feed() 返回后小于最长帧长度。
+    /// @brief 返回尚未消费的缓存字节数；feed_and_parse() 返回后小于最长帧长度。
     [[nodiscard]]
     constexpr std::size_t buffered_size() const noexcept { return m_buffered_size; }
 
