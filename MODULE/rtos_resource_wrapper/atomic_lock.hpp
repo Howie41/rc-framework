@@ -3,7 +3,7 @@
 #include <atomic>
 
 /**
- * @brief 轻量原子锁，没有长时间阻塞获取的功能
+ * @brief   
  */
 class AtomicLock {
 private:
