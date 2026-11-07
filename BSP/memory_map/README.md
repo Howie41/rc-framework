@@ -13,7 +13,7 @@ RAM_D1_BSS static uint16_t samples[1024]{};             // 普通大数组，初
 RAM_D1_DATA static uint16_t values[]{1, 2, 3};          // 普通数据，保留初值
 ```
 
-这些宏只决定数据放在哪里，不会替你启动 DMA 或收发数据。使用 [UartPortDma](../uart_port/README.md) 时，它已经准备好 DMA 缓冲区，不用再额外建一份。
+这些宏只决定数据放在哪里，不会替你启动 DMA 或收发数据。使用 [UartPortDma](../uart_port/README.md) 时，在实例定义处加上 `DMA_BUFFER_BSS`，实例内的 DMA 缓冲区会随对象一起放置。
 
 ### 选择哪个宏
 

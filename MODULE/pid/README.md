@@ -149,7 +149,7 @@ speed_pid.config().improvement.store(options);
 #include "usart.h"
 
 // 函数外创建，且早于 rtos_resource_init()。不要和别的功能共用 USART3。
-UartPortDma<"pid-viewer-uart3", 64, 128, 512> viewer_uart{huart3, {}};
+DMA_BUFFER_BSS UartPortDma<64, 128, 512> viewer_uart{huart3, {}};
 
 // 串口初始化和 RTOS 资源创建完成后，在 Viewer 任务开始时调用一次。
 bool init_pid_viewer() {

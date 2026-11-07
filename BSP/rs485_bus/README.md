@@ -12,7 +12,7 @@
 #include <span>
 
 // 放在函数外，rtos_resource_init() 之前创建，整个运行期间保留。
-UartPortDma<"rs485-uart2", 64, 128, 512> uart{huart2, {}};
+DMA_BUFFER_BSS UartPortDma<64, 128, 512> uart{huart2, {}};
 Rs485Bus bus{uart};
 Im6014Motor motor;
 

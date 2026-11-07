@@ -75,7 +75,6 @@ public:
 
     /**
      * @brief 绑定 DMA 串口，接管 Viewer 收发；不启动或中止串口 DMA。
-     * @tparam UniqueId 串口缓冲区的编译期唯一标识。
      * @tparam TransmitBufferSize DMA 发送缓冲区容量，至少为 52 字节。
      * @tparam ReceiveBufferSize DMA 接收缓冲区容量，须大于零。
      * @tparam ReceiveStreamBufferSize 接收流缓冲区容量，须大于零。
@@ -84,14 +83,14 @@ public:
      *       重新绑定会清空待发帧、半帧和监控通道。
      *       不清空串口接收流缓冲区，也不取消已提交给 DMA 的发送。
      */
-    template <StaticString UniqueId, uint16_t TransmitBufferSize,
+    template <uint16_t TransmitBufferSize,
               uint16_t ReceiveBufferSize, uint16_t ReceiveStreamBufferSize>
     static void bind(
-        UartPortDma<UniqueId, TransmitBufferSize, ReceiveBufferSize, ReceiveStreamBufferSize> &port) {
+        UartPortDma<TransmitBufferSize, ReceiveBufferSize, ReceiveStreamBufferSize> &port) {
         static_assert(TransmitBufferSize >= kMaxFrameSize, "PID Viewer TX buffer must hold a complete frame");
         static_assert(ReceiveBufferSize > 0 && ReceiveStreamBufferSize > 0,
                       "PID Viewer requires a DMA RX stream buffer");
-        using Port = UartPortDma<UniqueId, TransmitBufferSize, ReceiveBufferSize, ReceiveStreamBufferSize>;
+        using Port = UartPortDma<TransmitBufferSize, ReceiveBufferSize, ReceiveStreamBufferSize>;
         auto &viewer = instance();
         viewer.m_uart_port = &port;
         viewer.m_uart_receive = [](UartPort *uart, std::span<uint8_t> bytes) {
