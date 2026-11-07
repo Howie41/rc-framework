@@ -25,10 +25,10 @@ public:
     static constexpr std::uint32_t kResponseIdleMs = 1;
 
     /// @brief 绑定现有 DMA 串口；DMA 配置、发送互斥及 RTOS 缓冲区由 UART/Queue 自身保证。
-    template <StaticString UniqueId, std::uint16_t TxSize, std::uint16_t RxSize, std::uint16_t StreamSize>
-    explicit Rs485Bus(UartPortDma<UniqueId, TxSize, RxSize, StreamSize>& port) noexcept
+    template <std::uint16_t TxSize, std::uint16_t RxSize, std::uint16_t StreamSize>
+    explicit Rs485Bus(UartPortDma<TxSize, RxSize, StreamSize>& port) noexcept
         : m_uart(port), m_tx_capacity(std::min<std::size_t>(TxSize, kMaxFrameSize)) {
-        using Port = UartPortDma<UniqueId, TxSize, RxSize, StreamSize>;
+        using Port = UartPortDma<TxSize, RxSize, StreamSize>;
         // 仅适配具体 UART 模板类型，不注册额外的中断回调。
         m_transmit = [](UartPort& base, std::span<const std::uint8_t> bytes) {
             return static_cast<Port&>(base).start_transmit_dma(bytes);

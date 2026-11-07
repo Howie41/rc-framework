@@ -88,7 +88,7 @@ bool update_motor(float current_ma) {
 #include <span>
 
 // 放在函数外，rtos_resource_init() 之前创建。串口名不要与其他实例重复。
-UartPortDma<"im6014-uart2", 64, 128, 512> motor_uart{huart2, {}};
+DMA_BUFFER_BSS UartPortDma<64, 128, 512> motor_uart{huart2, {}};
 Rs485Bus rs485{motor_uart};
 Im6014Motor im_motor;
 

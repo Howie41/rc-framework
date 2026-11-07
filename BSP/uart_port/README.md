@@ -27,7 +27,7 @@ using LedFrame = frame::Frame<
 using LedParser = frame::FrameParser<LedFrame>;
 
 // 放在函数外，rtos_resource_init() 之前创建。
-UartPortDma<"led-uart3", 64, 64, 256> led_uart{huart3, {}};
+DMA_BUFFER_BSS UartPortDma<64, 64, 256> led_uart{huart3, {}};
 uint8_t led_duty{};
 uint16_t led_duration_ms{};
 LedParser parser({
@@ -72,7 +72,9 @@ HAL_StatusTypeDef send_led_command() {
 
 项目的 `uart_port.cpp` 已经把 HAL 回调接好，不要在别处重复定义同名 HAL 回调。接收的一批字节可能是半帧，也可能包含多帧，所以示例把它们交给同一个 [FrameParser](../../MODULE/frame_codec/README.md)。
 
-### UartPortDma<UniqueId, TxBufferSize = 0, RxBufferSize = 0, RxStreamBufferSize = 0>
+### UartPortDma<TxBufferSize = 0, RxBufferSize = 0, RxStreamBufferSize = 0>
+
+在静态存储期的实例定义处加上 `DMA_BUFFER_BSS`，让实例及内嵌缓冲区一起进入 D2 SRAM。
 
 DMA 串口。上面的 `64, 64, 256` 分别是发送数组、DMA 接收数组、任务接收缓冲区的大小，单位都是字节。
 

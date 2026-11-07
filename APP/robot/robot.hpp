@@ -36,7 +36,7 @@ RAM_D1_BSS inline rtos::Task<
 inline C620 can1_c620{can1_bus};
 inline C620Motor test_motor{can1_c620, 1};
 
-inline UartPortDma<"uart2", 32, 32, 32 * 2> uart2_port{huart2, {}};
+DMA_BUFFER_BSS inline UartPortDma<32, 32, 32 * 2> uart2_port{huart2, {}};
 inline Rs485Bus rs4851_bus{uart2_port};
 // inline Im6014Motor test_motor{0x00, 0};
 

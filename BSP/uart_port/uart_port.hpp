@@ -9,7 +9,6 @@
 #include "main.h"
 #include "memory_map.h"
 #include "rtos_stream_buffer.hpp"
-#include "static_string.hpp"
 
 #include <algorithm>
 #include <array>
@@ -183,26 +182,24 @@ public:
 /**
  * @brief DMA 串口
  *
- * @tparam UniqueId 唯一标识符，建议写 "uart4" "uart5" 之类的，不同实例间的id保持唯一，
- *         防止多个实例共用同一缓冲区
  * @tparam TxBufferSize 发送缓冲区大小
  * @tparam RxBufferSize 接收缓冲区大小
  * @tparam RxStreamBufferSize 接收流缓冲区容量，单位字节，把接收到的数据放到流缓冲区里，
  *         方便在 RTOS 任务里读取；
  *         设置为 0 时不启用，此时对应流缓冲区不会被创建
  *
+ * @attention 请在静态存储期的实例定义处加 DMA_BUFFER_BSS。
  * @attention 接收流缓冲区涉及 RTOS API，应该在 RTOS 内核启动后再开始接收
  */
 template <
-    StaticString UniqueId,
     std::uint16_t TxBufferSize = 0,
     std::uint16_t RxBufferSize = 0,
     std::uint16_t RxStreamBufferSize = 0
 >
 class UartPortDma : public UartPort {
 public:
-    DMA_BUFFER_BSS static inline std::array<std::uint8_t, TxBufferSize> m_tx_buffer;
-    DMA_BUFFER_BSS static inline std::array<std::uint8_t, RxBufferSize> m_rx_buffer;
+    alignas(32) std::array<std::uint8_t, TxBufferSize> m_tx_buffer;
+    alignas(32) std::array<std::uint8_t, RxBufferSize> m_rx_buffer;
 
     explicit UartPortDma(
         UART_HandleTypeDef& huart, 
@@ -262,7 +259,7 @@ public:
     >;
     using IsRxStreamBufferEnabled = std::bool_constant<(RxStreamBufferSize > 0)>;
 
-    RAM_D1_BSS static inline RxStreamBuffer m_rx_stream_buffer;
+    alignas(8) RxStreamBuffer m_rx_stream_buffer;
     std::atomic<std::size_t> m_rx_stream_dropped_bytes{0};
 
     /**
