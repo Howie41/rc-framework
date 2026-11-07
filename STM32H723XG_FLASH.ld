@@ -257,6 +257,28 @@ SECTIONS
     _sdma_buffer_bss = .;
     *(.dma_buffer_bss)
     *(.dma_buffer_bss.*)
+    /*
+     * RC27-TR2 USART3 PID Viewer 无回包复盘：下位机收到查询并生成了回复，但 TX 缓冲区
+     * 在最终 ELF 中丢失，发送代码引用的缓冲区地址变成了 0。
+     * 当时 UartPortDma 的 static inline 模板缓冲区共用 .dma_buffer_bss 输入段。
+     * ARM GCC 给 robot.cpp.obj 和 debug_task.cpp.obj 的该段生成了相同的 COMDAT
+     * 签名（RS485 TX），但只有后者包含 USART3 TX。链接器按整组去重时将它一起丢弃。
+     *
+     * DMA_BUFFER_BSS_UNIQUE 在 GCC 下用 noinit 配合 -fdata-sections，让每个模板
+     * 缓冲区有独立的 .noinit.* 输入段和 COMDAT 签名。这里按通用前缀收集这些段，
+     * 保留 32 字节对齐并放入 DMA 可访问的 D2 SRAM。虽然输入段叫 noinit，项目的
+     * Reset_Handler 仍会清零整个 _sdma_buffer_bss 到 _edma_buffer_bss 区间。
+     *
+     * 工具链升级后可用 readelf -g 检查 .obj 的 COMDAT 分组，再核对最终 ELF/map
+     * 中各路 DMA TX/RX 符号均位于 D2 SRAM 且地址满足对齐要求。当前 ARM GCC 的
+     * 汇编器可能报告 .noinit.* 段类型警告，最终 .dma_buffer_bss 应为 NOBITS。
+     *
+     * TODO: 在构建结束时自动检查每个已启用的 UART DMA TX/RX 缓冲区。符号缺失、
+     * 超出 D2 SRAM 或未按 32 字节对齐时直接报错。检查应覆盖本次 TX 符号被丢弃的情况。
+     * TODO: 如需新增跨复位保留的数据，先提供专用内存宏和独立段，并确保该段在
+     * Reset_Handler 的清零范围之外。当前规则会把 .noinit.* 收进启动时清零的 DMA 段。
+     */
+    *(.noinit.*)
     . = ALIGN(32);
     _edma_buffer_bss = .;
   } >RAM_D2

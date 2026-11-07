@@ -201,8 +201,8 @@ template <
 >
 class UartPortDma : public UartPort {
 public:
-    DMA_BUFFER_BSS static inline std::array<std::uint8_t, TxBufferSize> m_tx_buffer;
-    DMA_BUFFER_BSS static inline std::array<std::uint8_t, RxBufferSize> m_rx_buffer;
+    DMA_BUFFER_BSS_UNIQUE static inline std::array<std::uint8_t, TxBufferSize> m_tx_buffer;
+    DMA_BUFFER_BSS_UNIQUE static inline std::array<std::uint8_t, RxBufferSize> m_rx_buffer;
 
     explicit UartPortDma(
         UART_HandleTypeDef& huart, 
@@ -262,7 +262,8 @@ public:
     >;
     using IsRxStreamBufferEnabled = std::bool_constant<(RxStreamBufferSize > 0)>;
 
-    RAM_D1_BSS static inline RxStreamBuffer m_rx_stream_buffer;
+    // 接收流缓冲区由 CPU 读写，使用普通 BSS。
+    alignas(8) static inline RxStreamBuffer m_rx_stream_buffer;
     std::atomic<std::size_t> m_rx_stream_dropped_bytes{0};
 
     /**
